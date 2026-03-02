@@ -200,6 +200,8 @@ for i in range(n_windows):
     
     win_embs_t = torch.tensor(encode(X_win), dtype=torch.float32).to(device)
     score = MMD(ref_embs_t, win_embs_t, kernel="rbf").item()
+    
+    print(i)
 
     window_positions.append(start_batch_pos + WINDOW_SIZE // 2)
     mmd_scores.append(score)
