@@ -102,7 +102,12 @@ window_entropies  = []
 classes = np.unique(ref_labels)
 
 
-device = "mps" if torch.backends.mps.is_available() else "cuda"
+if torch.backends.mps.is_available():
+    device = "mps"
+elif torch.cuda.is_available():
+    device = "cuda"
+else:
+    device = "cpu"
 
 lora_config = LoraConfig(
     r=8,
