@@ -212,6 +212,11 @@ def compute_mmd(X: np.ndarray, Y: np.ndarray, gamma: float) -> float:
     return float(max(0.0, term_XX + term_YY - 2.0 * term_XY))
 
 
+def compute_centroid_distance(X: np.ndarray, Y: np.ndarray) -> float:
+    """L2 distance between the mean embedding of X and Y."""
+    return float(np.linalg.norm(X.mean(axis=0) - Y.mean(axis=0)))
+
+
 def encode_and_predict(texts, batch_size=32):
     all_embeddings, all_preds, all_entropies = [], [], []
     model.eval()
@@ -257,6 +262,7 @@ window_positions  = []
 window_accuracies = []
 window_entropies  = []
 mmd_scores        = []
+centroid_scores   = []
 
 for i in range(n_windows):
     start_batch_pos = i * WINDOW_SIZE
@@ -271,22 +277,24 @@ for i in range(n_windows):
     preds_orig = np.array([inv_label_map[p] for p in win_preds])
     acc     = (preds_orig == y_win).mean()
     entropy = win_entropies.mean()
-    ref_np = ref_embs_t.cpu().numpy()
-    win_np = win_embs_t.cpu().numpy()
-    gamma  = _estimate_gamma(ref_np)
-    score  = compute_mmd(ref_np, win_np, gamma)
+    ref_np        = ref_embs_t.cpu().numpy()
+    win_np        = win_embs_t.cpu().numpy()
+    gamma         = _estimate_gamma(ref_np)
+    score         = compute_mmd(ref_np, win_np, gamma)
+    centroid_dist = compute_centroid_distance(ref_np, win_np)
 
     window_accuracies.append(acc)
     window_entropies.append(entropy)
     mmd_scores.append(score)
+    centroid_scores.append(centroid_dist)
 
     window_positions.append(start_batch_pos + WINDOW_SIZE // 2)
-    print(f"Window {i+1}/{n_windows}  acc={acc:.3f}  entropy={entropy:.4f}  mmd={score:.4f}")
+    print(f"Window {i+1}/{n_windows}  acc={acc:.3f}  entropy={entropy:.4f}  mmd={score:.4f}  centroid={centroid_dist:.4f}")
 
 # ── Plot ──────────────────────────────────────────────────────────────────────
 drift_colors = ["#e74c3c", "#e67e22", "#9b59b6"]
 
-fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
+fig, axes = plt.subplots(4, 1, figsize=(14, 14), sharex=True)
 fig.suptitle(
     f"Concept Drift — {BASE}-comdrift-{SUBSET}-{DRIFT_TYPE}.csv\n"
     f"ModernBERT + LoRA  |  Window = {WINDOW_SIZE:,} samples",
@@ -316,9 +324,16 @@ ax3 = axes[2]
 ax3.plot(window_positions, mmd_scores, color="darkorange", linewidth=1.3, label="MMD score")
 ax3.fill_between(window_positions, mmd_scores, alpha=0.15, color="darkorange")
 ax3.set_ylabel("MMD score", fontsize=11)
-ax3.set_xlabel("Position in comdrift stream (sample index)", fontsize=11)
 ax3.legend(loc="upper left", fontsize=9)
 ax3.grid(alpha=0.3)
+
+ax4 = axes[3]
+ax4.plot(window_positions, centroid_scores, color="mediumpurple", linewidth=1.3, label="Centroid distance")
+ax4.fill_between(window_positions, centroid_scores, alpha=0.15, color="mediumpurple")
+ax4.set_ylabel("Centroid distance", fontsize=11)
+ax4.set_xlabel("Position in comdrift stream (sample index)", fontsize=11)
+ax4.legend(loc="upper left", fontsize=9)
+ax4.grid(alpha=0.3)
 
 legend_patches = []
 for pos, col in zip(DRIFT_POSITIONS, drift_colors):
@@ -328,12 +343,12 @@ for pos, col in zip(DRIFT_POSITIONS, drift_colors):
     legend_patches.append(mpatches.Patch(color=col, label=label))
 
 x_ticks = np.arange(0, N_DRIFTED + 1, 25_000)
-ax3.set_xticks(x_ticks)
-ax3.set_xticklabels([f"{x // 1_000}k" for x in x_ticks])
-axes[2].legend(handles=legend_patches, loc="upper right", fontsize=9)
+ax4.set_xticks(x_ticks)
+ax4.set_xticklabels([f"{x // 1_000}k" for x in x_ticks])
+axes[3].legend(handles=legend_patches, loc="upper right", fontsize=9)
 
 plt.tight_layout()
-out_path = "mmd_drift_detection_3.png"
+out_path = "mmd_drift_detection_4.png"
 plt.savefig(out_path, dpi=150, bbox_inches="tight")
 plt.show()
 print(f"\nPlot saved → {out_path}")
