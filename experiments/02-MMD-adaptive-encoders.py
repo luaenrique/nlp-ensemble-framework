@@ -20,33 +20,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from sklearn.feature_extraction.text import HashingVectorizer
-from sklearn.linear_model import SGDClassifier
-from sklearn.pipeline import Pipeline
 
 from peft import get_peft_model, LoraConfig, TaskType
+from torch.optim import AdamW
 
 import torch
 from transformers import AutoTokenizer, ModernBertForSequenceClassification
-
-tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
-model = ModernBertForSequenceClassification.from_pretrained("answerdotai/ModernBERT-base")
-
-inputs = tokenizer("Hello, my dog is cute", return_tensors="pt")
-
-with torch.no_grad():
-    logits = model(**inputs).logits
-
-predicted_class_id = logits.argmax().item()
-model.config.id2label[predicted_class_id]
-
-# To train a model on `num_labels` classes, you can pass `num_labels=num_labels` to `.from_pretrained(...)`
-num_labels = len(model.config.id2label)
-model = ModernBertForSequenceClassification.from_pretrained("answerdotai/ModernBERT-base", num_labels=num_labels)
-
-labels = torch.tensor([1])
-loss = model(**inputs, labels=labels).loss
-round(loss.item(), 2)
 
 DATASET_DIR = "datasets"
 BASE        = "airbnb"
@@ -75,33 +54,11 @@ stream_labels = com_df["label"].values[:N_DRIFTED]
 print(f"Reference : {len(ref_texts):>7,} samples  |  labels: {np.unique(ref_labels)}")
 print(f"Stream    : {len(stream_texts):>7,} samples  |  labels: {np.unique(stream_labels)}")
 
-clf = Pipeline([
-    ("vec", HashingVectorizer(
-        n_features=2 ** 16,
-        ngram_range=(1, 2),
-        alternate_sign=False,
-    )),
-    ("cls", SGDClassifier(
-        loss="log_loss",
-        max_iter=5,
-        random_state=42,
-        n_jobs=-1,
-    )),
-])
+n_windows        = len(stream_texts) // WINDOW_SIZE
+label_map        = {v: i for i, v in enumerate(np.unique(ref_labels))}
+inv_label_map    = {i: v for v, i in label_map.items()}
 
-print("\nTraining on reference window …")
-clf.fit(ref_texts, ref_labels)
-ref_acc = (clf.predict(ref_texts) == ref_labels).mean()
-print(f"Reference train accuracy: {ref_acc:.3f}")
-
-n_windows         = len(stream_texts) // WINDOW_SIZE
-window_positions  = [] 
-window_accuracies = []
-window_entropies  = []  
-
-classes = np.unique(ref_labels)
-
-
+# ── Device ────────────────────────────────────────────────────────────────────
 if torch.backends.mps.is_available():
     device = "mps"
 elif torch.cuda.is_available():
@@ -109,16 +66,54 @@ elif torch.cuda.is_available():
 else:
     device = "cpu"
 
+# ── Model + LoRA ──────────────────────────────────────────────────────────────
+num_labels = len(label_map)
+
+tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+model = ModernBertForSequenceClassification.from_pretrained(
+    "answerdotai/ModernBERT-base", num_labels=num_labels
+)
+
 lora_config = LoraConfig(
     r=8,
     lora_alpha=16,
     target_modules=["Wqkv"],
-    task_type=TaskType.FEATURE_EXTRACTION,
+    task_type=TaskType.SEQ_CLS,
 )
 
 model = get_peft_model(model, lora_config).to(device)
 model.print_trainable_parameters()
 
+# ── Train classifier on reference window ─────────────────────────────────────
+TRAIN_EPOCHS = 3
+TRAIN_BATCH  = 16
+
+optimizer = AdamW(model.parameters(), lr=2e-4)
+model.train()
+
+for epoch in range(TRAIN_EPOCHS):
+    for i in range(0, len(ref_texts), TRAIN_BATCH):
+        batch_texts  = ref_texts[i : i + TRAIN_BATCH].tolist()
+        batch_labels = torch.tensor(
+            [label_map[l] for l in ref_labels[i : i + TRAIN_BATCH]]
+        ).to(device)
+
+        inputs = tokenizer(batch_texts, padding=True, truncation=True,
+                           max_length=512, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        loss = model(**inputs, labels=batch_labels).loss
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+    print(f"Epoch {epoch + 1}/{TRAIN_EPOCHS} done")
+
+print("Training complete.")
+
+
+def l2_norm(t):
+    return t / t.norm(dim=1, keepdim=True)
 
 
 def MMD(x, y, kernel):
@@ -163,59 +158,107 @@ def MMD(x, y, kernel):
     return torch.mean(XX + YY - 2. * XY)
 
 
-def encode(texts, batch_size = 32):
-    all_embeddings = []
+def encode_and_predict(texts, batch_size=32):
+    all_embeddings, all_preds = [], []
     model.eval()
-    
+
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size].tolist()
-        inputs = tokenizer(batch, padding=True, truncation=True, max_length=512, return_tensors="pt")
-
+        inputs = tokenizer(batch, padding=True, truncation=True,
+                           max_length=512, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        
+
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
-            
-        cls_token_embedding = outputs.hidden_states[-1][:,0,:].cpu().numpy()
-        
-        all_embeddings.append(cls_token_embedding)
-    
-    return np.concatenate(all_embeddings, axis=0)
+
+        all_embeddings.append(outputs.hidden_states[-1][:, 0, :].cpu())
+        all_preds.append(outputs.logits.argmax(dim=-1).cpu().numpy())
+
+    embeddings = torch.cat(all_embeddings, dim=0)
+    preds      = np.concatenate(all_preds, axis=0)
+    return embeddings, preds
 
 
 
+# ── Reference embeddings + accuracy baseline ─────────────────────────────────
 N_REF_EMB = 400
-ref_embs_t = torch.tensor(encode(ref_texts[:N_REF_EMB]), dtype=torch.float32).to(device)
+ref_embs_t, ref_preds = encode_and_predict(ref_texts[:N_REF_EMB])
+ref_embs_t = ref_embs_t.to(device)
 
-window_positions = []
-mmd_scores       = []        
+ref_preds_orig = np.array([inv_label_map[p] for p in ref_preds])
+ref_acc = (ref_preds_orig == ref_labels[:N_REF_EMB]).mean()
+print(f"Reference accuracy (ModernBERT): {ref_acc:.3f}")
+
+sigma = torch.cdist(ref_embs_t, ref_embs_t).median().item()
+print(f"Median pairwise distance (ref): {sigma:.4f}")
+
+# ── Stream evaluation ─────────────────────────────────────────────────────────
+window_positions  = []
+window_accuracies = []
+mmd_scores        = []
 
 for i in range(n_windows):
     start_batch_pos = i * WINDOW_SIZE
     end_batch_pos   = start_batch_pos + WINDOW_SIZE
-    
 
     X_win = stream_texts[start_batch_pos:end_batch_pos]
     y_win = stream_labels[start_batch_pos:end_batch_pos]
-    
-    win_embs_t = torch.tensor(encode(X_win), dtype=torch.float32).to(device)
-    score = MMD(ref_embs_t, win_embs_t, kernel="rbf").item()
-    
-    print(i)
 
-    window_positions.append(start_batch_pos + WINDOW_SIZE // 2)
+    win_embs_t, win_preds = encode_and_predict(X_win)
+    win_embs_t = win_embs_t.to(device)
+
+    preds_orig = np.array([inv_label_map[p] for p in win_preds])
+    acc = (preds_orig == y_win).mean()
+    window_accuracies.append(acc)
+
+    score = MMD(l2_norm(ref_embs_t), l2_norm(win_embs_t), kernel="multiscale").item()
     mmd_scores.append(score)
 
-fig, ax = plt.subplots(figsize=(14, 4))
-ax.plot(window_positions, mmd_scores, color="steelblue", linewidth=1.3)
-ax.set_ylabel("MMD score")
-ax.set_xlabel("Position in stream")
-ax.grid(alpha=0.3)
+    window_positions.append(start_batch_pos + WINDOW_SIZE // 2)
+    print(f"Window {i+1}/{n_windows}  acc={acc:.3f}  mmd={score:.4f}")
 
+# ── Plot ──────────────────────────────────────────────────────────────────────
 drift_colors = ["#e74c3c", "#e67e22", "#9b59b6"]
+
+fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+fig.suptitle(
+    f"Concept Drift — {BASE}-comdrift-{SUBSET}-{DRIFT_TYPE}.csv\n"
+    f"ModernBERT + LoRA  |  Window = {WINDOW_SIZE:,} samples",
+    fontsize=13,
+)
+
+ax1 = axes[0]
+ax1.plot(window_positions, window_accuracies, color="steelblue", linewidth=1.3, label="Window accuracy")
+ax1.fill_between(window_positions, window_accuracies, alpha=0.15, color="steelblue")
+ax1.axhline(ref_acc, color="steelblue", linestyle=":", linewidth=1, alpha=0.7,
+            label=f"Reference accuracy ({ref_acc:.3f})")
+ax1.set_ylabel("Accuracy", fontsize=11)
+ax1.set_ylim(0, 1.05)
+ax1.legend(loc="lower left", fontsize=9)
+ax1.grid(alpha=0.3)
+
+ax2 = axes[1]
+ax2.plot(window_positions, mmd_scores, color="darkorange", linewidth=1.3, label="MMD score")
+ax2.fill_between(window_positions, mmd_scores, alpha=0.15, color="darkorange")
+ax2.set_ylabel("MMD score", fontsize=11)
+ax2.set_xlabel("Position in comdrift stream (sample index)", fontsize=11)
+ax2.legend(loc="upper left", fontsize=9)
+ax2.grid(alpha=0.3)
+
+legend_patches = []
 for pos, col in zip(DRIFT_POSITIONS, drift_colors):
-    ax.axvline(x=pos, color=col, linestyle="--", linewidth=1.8, alpha=0.85)
+    label = f"Drift @ {pos // 1_000}k"
+    for ax in axes:
+        ax.axvline(x=pos, color=col, linestyle="--", linewidth=1.8, alpha=0.85)
+    legend_patches.append(mpatches.Patch(color=col, label=label))
+
+x_ticks = np.arange(0, N_DRIFTED + 1, 25_000)
+ax2.set_xticks(x_ticks)
+ax2.set_xticklabels([f"{x // 1_000}k" for x in x_ticks])
+axes[1].legend(handles=legend_patches, loc="upper right", fontsize=9)
 
 plt.tight_layout()
-plt.savefig("mmd_drift_detection.png", dpi=150, bbox_inches="tight")
+out_path = "mmd_drift_detection.png"
+plt.savefig(out_path, dpi=150, bbox_inches="tight")
 plt.show()
+print(f"\nPlot saved → {out_path}")
