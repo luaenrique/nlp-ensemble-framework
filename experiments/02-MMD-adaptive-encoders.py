@@ -258,7 +258,7 @@ ax2.set_xticklabels([f"{x // 1_000}k" for x in x_ticks])
 axes[1].legend(handles=legend_patches, loc="upper right", fontsize=9)
 
 plt.tight_layout()
-out_path = "mmd_drift_detection.png"
+out_path = "mmd_drift_detection_2.png"
 plt.savefig(out_path, dpi=150, bbox_inches="tight")
 plt.show()
 print(f"\nPlot saved → {out_path}")
