@@ -32,8 +32,8 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, Mode
 # ── Dataset config ─────────────────────────────────────────────────────────────
 DATASET_DIR = "datasets"
 BASE        = "airbnb"
-SUBSET      = 1
-DRIFT_TYPE  = 2
+SUBSET      = 2
+DRIFT_TYPE  = 1
 
 N_REFERENCE  = 50_000
 N_DRIFTED    = 150_000
