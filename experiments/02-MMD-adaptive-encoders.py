@@ -52,20 +52,20 @@ ENCODERS = [
         "model_name"        : "answerdotai/ModernBERT-base",
         "model_class"       : ModernBertForSequenceClassification,
         "trust_remote_code" : False,
-        "out_path"          : "drift_modernbert.png",
+        "out_path"          : "drift_modernbert_ss.png",
     },
     {
         "name"              : "Jina-v2",
         "model_name"        : "jinaai/jina-embeddings-v2-base-en",
         "model_class"       : AutoModelForSequenceClassification,
         "trust_remote_code" : True,
-        "out_path"          : "drift_jina.png",
+        "out_path"          : "drift_jina_ss.png",
     },
 ]
 
 # ── Load data ──────────────────────────────────────────────────────────────────
 sem_path = f"{DATASET_DIR}/{BASE}-semdrift-{SUBSET}-1.csv"
-com_path = f"{DATASET_DIR}/{BASE}-comdrift-{SUBSET}-{DRIFT_TYPE}.csv"
+com_path = f"{DATASET_DIR}/{BASE}-comdrift-{SUBSET}-{DRIFT_TYPE}-ss.csv"
 
 sem_df = pd.read_csv(sem_path).dropna(subset=["review_treated"])
 com_df = pd.read_csv(com_path).dropna(subset=["review_treated"])
