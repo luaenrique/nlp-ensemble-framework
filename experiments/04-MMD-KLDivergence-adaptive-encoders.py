@@ -53,14 +53,14 @@ ENCODERS = [
         "model_name"        : "answerdotai/ModernBERT-base",
         "model_class"       : ModernBertForSequenceClassification,
         "trust_remote_code" : False,
-        "out_path"          : "exp_04_drift_modernbert_ss.png",
+        "out_path"          : "exp_04_drift_modernbert_ss_2.png",
     },
     {
         "name"              : "Jina-v2",
         "model_name"        : "jinaai/jina-embeddings-v2-base-en",
         "model_class"       : AutoModelForSequenceClassification,
         "trust_remote_code" : True,
-        "out_path"          : "exp_04drift_jina_ss.png",
+        "out_path"          : "exp_04drift_jina_ss_2.png",
     },
 ]
 
