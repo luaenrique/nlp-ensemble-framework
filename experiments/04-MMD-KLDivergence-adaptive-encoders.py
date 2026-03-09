@@ -36,7 +36,7 @@ BASE        = "airbnb"
 SUBSET      = 2
 DRIFT_TYPE  = 1
 
-BURNIN_SIZE  = 5_000   # first N samples from comdrift used for training + reference
+BURNIN_SIZE  = 500   # first N samples from comdrift used for training + reference
 N_DRIFTED    = 150_000
 WINDOW_SIZE  = 400
 N_REF_EMB    = 400
