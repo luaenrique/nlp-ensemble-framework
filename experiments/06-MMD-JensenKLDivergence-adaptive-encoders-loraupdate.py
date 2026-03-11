@@ -328,10 +328,11 @@ def encode_and_predict(texts, model, tokenizer, batch_size=32):
     )
 
 
-def train_model(model, tokenizer, texts, labels):
+def train_model(model, tokenizer, texts, labels, label: str = "train"):
     optimizer = AdamW(model.parameters(), lr=2e-4)
     model.train()
 
+    print(f"  [{label.upper()}] Starting — {len(texts):,} samples, {TRAIN_EPOCHS} epochs")
     for epoch in range(TRAIN_EPOCHS):
         for i in range(0, len(texts), TRAIN_BATCH):
             batch_texts  = texts[i : i + TRAIN_BATCH].tolist()
@@ -348,7 +349,7 @@ def train_model(model, tokenizer, texts, labels):
             optimizer.step()
             optimizer.zero_grad()
 
-        print(f"  Epoch {epoch + 1}/{TRAIN_EPOCHS} done")
+        print(f"  [{label.upper()}] Epoch {epoch + 1}/{TRAIN_EPOCHS} done")
 
 
 def plot_results(
@@ -470,7 +471,7 @@ for enc in ENCODERS:
     model.print_trainable_parameters()
 
     print("Training …")
-    train_model(model, tokenizer, ref_texts, ref_labels)
+    train_model(model, tokenizer, ref_texts, ref_labels, label="train")
     print("Training complete.")
 
     # ── Reference embeddings + accuracy baseline ───────────────────────────────
@@ -521,7 +522,7 @@ for enc in ENCODERS:
         if score > MMD_THRESHOLD:
             pos = start + WINDOW_SIZE // 2
             print(f"  [ADAPT] MMD={score:.4f} > {MMD_THRESHOLD} at window {i+1} (pos {pos:,}) — retraining LoRA …")
-            train_model(model, tokenizer, X_win, y_win)
+            train_model(model, tokenizer, X_win, y_win, label="adapt")
             # Re-encode with updated model to get new reference distribution
             new_ref_t, _, _ = encode_and_predict(X_win, model, tokenizer)
             ref_np = new_ref_t.cpu().numpy()
