@@ -22,6 +22,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from scipy.spatial.distance import pdist
+from sklearn.decomposition import PCA
 from abc import ABC, abstractmethod
 
 from river.drift import ADWIN
@@ -453,6 +454,49 @@ def train_model(model, tokenizer, texts, labels, label: str = "train"):
         print(f"  [{label.upper()}] Epoch {epoch + 1}/{TRAIN_EPOCHS} done")
 
 
+def plot_drift_scatter(
+    ref_np: np.ndarray,
+    win_np: np.ndarray,
+    pos: int,
+    window_idx: int,
+    encoder_name: str,
+    mmd_score: float,
+):
+    """
+    2-D PCA scatter of reference vs drifted window embeddings.
+    Saved to disk as drift_scatter_{encoder_name}_w{window_idx}.png
+    """
+    combined = np.vstack([ref_np, win_np])
+    pca      = PCA(n_components=2)
+    coords   = pca.fit_transform(combined)
+    var      = pca.explained_variance_ratio_
+
+    ref_c = coords[:len(ref_np)]
+    win_c = coords[len(ref_np):]
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.scatter(ref_c[:, 0], ref_c[:, 1], s=18, alpha=0.6,
+               color="steelblue", label=f"Reference  (n={len(ref_np)})")
+    ax.scatter(win_c[:, 0], win_c[:, 1], s=18, alpha=0.6,
+               color="tomato",    label=f"Drift window (n={len(win_np)})")
+
+    ax.set_title(
+        f"Drift detected — {encoder_name}\n"
+        f"stream pos {pos:,}  |  MMD={mmd_score:.4f}",
+        fontsize=11,
+    )
+    ax.set_xlabel(f"PC1 ({var[0]:.1%} var)", fontsize=10)
+    ax.set_ylabel(f"PC2 ({var[1]:.1%} var)", fontsize=10)
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+
+    out = f"drift_scatter_{encoder_name.lower()}_w{window_idx}.png"
+    plt.tight_layout()
+    plt.savefig(out, dpi=130, bbox_inches="tight")
+    plt.show()
+    print(f"  [SCATTER] Saved → {out}")
+
+
 def plot_results(
     window_positions, window_accuracies, window_entropies,
     mmd_scores, kl_scores, js_scores, centroid_scores,
@@ -632,14 +676,18 @@ for enc in ENCODERS:
         if detector.drift_detected:
             print(f"  [DRIFT]   {DETECTOR.upper()} confirmed concept drift          "
                   f"— window {i+1} (pos {pos:,})  mmd={score:.4f}")
+            plot_drift_scatter(ref_np, win_np, pos, i + 1, enc["name"], score)
 
         # ── Detect-then-adapt: retrain LoRA on confirmed drift ─────────────────
         if detector.drift_detected:
             print(f"  [ADAPT] Retraining LoRA …")
             train_model(model, tokenizer, X_win, y_win, label="adapt")
             # Re-encode with updated model to get new reference distribution
-            new_ref_t, _, _ = encode_and_predict(X_win, model, tokenizer)
-            ref_np = new_ref_t.cpu().numpy()
+            new_ref_t, new_ref_preds, new_ref_entropies = encode_and_predict(X_win, model, tokenizer)
+            ref_np      = new_ref_t.cpu().numpy()
+            ref_entropy = new_ref_entropies.mean()
+            new_preds_orig = np.array([inv_label_map[p] for p in new_ref_preds])
+            ref_acc     = (new_preds_orig == y_win).mean()
             gamma  = _estimate_gamma(ref_np)
             detector.reset()
             adapt_positions.append(pos)
