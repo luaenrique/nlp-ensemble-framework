@@ -371,6 +371,28 @@ TRAJECTORY_YEARS  = sorted(com_df["year"].unique().tolist())
 TRAJECTORY_COLORS = ["#3498db", "#2ecc71", "#e67e22", "#9b59b6"]  # one per year
 MAX_TWEETS_PER_YEAR = 100  # cap per (word, year) to keep encoding fast
 
+# Anchor words: semantic landmarks plotted as fixed labeled points.
+# Chosen to cover the two poles (non-tech vs tech) and ambiguous territory.
+ANCHOR_WORDS = {
+    # non-tech
+    "fashion": "#c0392b",
+    "music":   "#c0392b",
+    "art":     "#c0392b",
+    "game":    "#c0392b",
+    # ambiguous
+    "language": "#7f8c8d",
+    "data":     "#7f8c8d",
+    "research": "#7f8c8d",
+    "design":   "#7f8c8d",
+    # tech / ML
+    "neural":        "#1abc9c",
+    "ai":            "#1abc9c",
+    "machine":       "#1abc9c",
+    "code":          "#1abc9c",
+    "intelligence":  "#1abc9c",
+    "software":      "#1abc9c",
+}
+
 
 def _encode_texts_only(texts, model, tokenizer, batch_size=32) -> np.ndarray:
     """Encode texts and return CLS embeddings as numpy array."""
