@@ -27,9 +27,9 @@ from transformers import AutoTokenizer, ModernBertForSequenceClassification
 DATASET_PATH = "experiments/tech_non_tech_dataset.csv"
 MODEL_NAME   = "answerdotai/ModernBERT-base"
 
-BURNIN_SIZE  = 200
-WINDOW_SIZE  = 50
-N_REF_EMB    = 50
+BURNIN_SIZE  = 1000
+WINDOW_SIZE  = 200
+N_REF_EMB    = 200
 TRAIN_EPOCHS = 3
 TRAIN_BATCH  = 16
 MMD_THRESHOLD = 0.2
