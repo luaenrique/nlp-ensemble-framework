@@ -411,21 +411,22 @@ def _encode_texts_only(texts, model, tokenizer, batch_size=32) -> np.ndarray:
 
 def plot_word_trajectories(model, tokenizer, encoder_name: str, out_path: str) -> None:
     """
-    Single shared plot showing:
-      - ANCHOR_WORDS as fixed labeled points (encoded as bare words, no context)
-      - TRAJECTORY_WORDS centroid trajectories per year, with arrows 2009→2026
+    3 subplots (one per target word). Each subplot shows:
+      - Anchor words as faint labeled dots in the background (semantic landmarks)
+      - Target word centroid per year as a filled circle, sized by tweet count
+      - Arrows connecting consecutive year centroids (temporal trajectory)
 
-    All points share the same PCA fitted on anchors + all target embeddings,
-    so positions are comparable. The anchors act as semantic landmarks — you
-    can see whether "model" is drifting towards the tech or fashion cluster.
+    No raw scatter points — only centroids — to keep the plot readable.
+    PCA is fitted once on anchors + all centroids so all subplots share the
+    same coordinate space and anchor positions.
     """
     rng = np.random.default_rng(seed=0)
 
-    # ── 1. Encode anchor words (each word as a bare string) ───────────────────
-    anchor_list  = list(ANCHOR_WORDS.keys())
-    anchor_embs  = _encode_texts_only(np.array(anchor_list), model, tokenizer)  # (n_anchors, d)
+    # ── 1. Encode anchor words ────────────────────────────────────────────────
+    anchor_list = list(ANCHOR_WORDS.keys())
+    anchor_embs = _encode_texts_only(np.array(anchor_list), model, tokenizer)
 
-    # ── 2. Collect target tweets per (word, year) and encode ──────────────────
+    # ── 2. Collect tweets and compute per-(word, year) centroids ──────────────
     word_year_texts: dict[tuple[str, int], np.ndarray] = {}
     for word in TRAJECTORY_WORDS:
         mask = com_df["text"].str.contains(rf"\b{word}\b", case=False, regex=True)
@@ -449,103 +450,98 @@ def plot_word_trajectories(model, tokenizer, encoder_name: str, out_path: str) -
     print(f"  [TRAJECTORY] Encoding {len(all_texts_flat):,} tweets + {len(anchor_list)} anchors …")
     tweet_embs = _encode_texts_only(all_texts_flat, model, tokenizer)
 
-    word_year_embs: dict[tuple[str, int], np.ndarray] = {}
+    # Compute per-(word, year) centroid embeddings (high-d)
+    word_year_centroid: dict[tuple[str, int], np.ndarray] = {}
+    word_year_count:    dict[tuple[str, int], int]        = {}
     cursor = 0
     for key, size in zip(all_keys, all_sizes):
-        word_year_embs[key] = tweet_embs[cursor : cursor + size]
+        chunk = tweet_embs[cursor : cursor + size]
+        word_year_centroid[key] = chunk.mean(axis=0)
+        word_year_count[key]    = size
         cursor += size
 
-    # ── 3. Fit PCA on anchors + all target embeddings ────────────────────────
+    # ── 3. Fit PCA on anchors + all centroids ─────────────────────────────────
+    centroid_stack = np.vstack(list(word_year_centroid.values()))
     pca = PCA(n_components=2, random_state=42)
-    pca.fit(np.vstack([anchor_embs, tweet_embs]))
+    pca.fit(np.vstack([anchor_embs, centroid_stack]))
     var = pca.explained_variance_ratio_
 
-    anchor_2d = pca.transform(anchor_embs)   # (n_anchors, 2)
+    anchor_2d = pca.transform(anchor_embs)
 
-    # ── 4. Plot ───────────────────────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(11, 8))
-    ax.set_title(
-        f"Semantic neighbourhood — {encoder_name}\n"
-        f'words: {", ".join(TRAJECTORY_WORDS)}   |   '
-        f"PC1 ({var[0]:.1%} var)  ·  PC2 ({var[1]:.1%} var)",
-        fontsize=12,
+    # ── 4. Draw ───────────────────────────────────────────────────────────────
+    n_words = len(TRAJECTORY_WORDS)
+    fig, axes = plt.subplots(1, n_words, figsize=(7 * n_words, 6), squeeze=False)
+    fig.suptitle(
+        f"Semantic trajectory — {encoder_name}   "
+        f"(PC1 {var[0]:.1%} · PC2 {var[1]:.1%} var)",
+        fontsize=13,
     )
 
-    # -- Anchor points (background, labelled) --
-    for i, word in enumerate(anchor_list):
-        color = ANCHOR_WORDS[word]
-        ax.scatter(*anchor_2d[i], s=60, color=color, alpha=0.6,
-                   marker="s", zorder=2)
-        ax.text(anchor_2d[i, 0], anchor_2d[i, 1], f" {word}",
-                fontsize=8, color=color, va="center", zorder=3,
-                fontweight="bold")
+    year_color = {yr: col for yr, col in zip(TRAJECTORY_YEARS, TRAJECTORY_COLORS)}
 
-    # -- Target word trajectories --
-    year_color  = {yr: col for yr, col in zip(TRAJECTORY_YEARS, TRAJECTORY_COLORS)}
-    traj_styles = ["o", "D", "^"]   # marker per target word
+    # Anchor colour groups for the legend
+    anchor_group_colors = {"non-tech": "#c0392b", "ambiguous": "#7f8c8d", "tech/ML": "#1abc9c"}
 
-    for w_idx, word in enumerate(TRAJECTORY_WORDS):
-        marker   = traj_styles[w_idx % len(traj_styles)]
-        centroids: list[tuple[int, np.ndarray]] = []
+    for col_idx, word in enumerate(TRAJECTORY_WORDS):
+        ax = axes[0][col_idx]
 
+        # -- Background: anchor word labels --
+        for i, aword in enumerate(anchor_list):
+            color = ANCHOR_WORDS[aword]
+            ax.scatter(*anchor_2d[i], s=30, color=color, alpha=0.4,
+                       marker="s", zorder=1)
+            ax.text(anchor_2d[i, 0], anchor_2d[i, 1], f"  {aword}",
+                    fontsize=7.5, color=color, alpha=0.6,
+                    va="center", zorder=2)
+
+        # -- Foreground: centroid trajectory --
+        centroids: list[tuple[int, np.ndarray, int]] = []
         for year in TRAJECTORY_YEARS:
-            if (word, year) not in word_year_embs:
+            if (word, year) not in word_year_centroid:
                 continue
-            embs_2d  = pca.transform(word_year_embs[(word, year)])
-            centroid = embs_2d.mean(axis=0)
-            centroids.append((year, centroid))
+            c2d = pca.transform(word_year_centroid[(word, year)].reshape(1, -1))[0]
+            centroids.append((year, c2d, word_year_count[(word, year)]))
+
+        for year, c2d, n in centroids:
             color = year_color[year]
+            size  = 80 + n * 1.5   # bigger dot = more tweets
+            ax.scatter(*c2d, s=size, color=color, edgecolors="black",
+                       linewidths=0.9, zorder=5,
+                       label=f"{year}  (n={n})")
+            ax.text(c2d[0], c2d[1], f"  {year}",
+                    fontsize=8.5, color=color, fontweight="bold",
+                    va="center", zorder=6)
 
-            # Scatter individual points
-            ax.scatter(embs_2d[:, 0], embs_2d[:, 1],
-                       s=14, alpha=0.2, color=color, zorder=1)
-            # Centroid with marker shape distinguishing the word
-            ax.scatter(*centroid, s=160, color=color, marker=marker,
-                       edgecolors="black", linewidths=0.8, zorder=6,
-                       label=f'"{word}" {year}  (n={len(embs_2d)})')
-            # Year label just above centroid
-            ax.text(centroid[0], centroid[1] + 0.005, f"{year}",
-                    ha="center", va="bottom", fontsize=7.5,
-                    color=color, fontweight="bold", zorder=7)
-
-        # Arrows between consecutive centroids for this word
         for i in range(len(centroids) - 1):
-            _, c_a = centroids[i]
-            _, c_b = centroids[i + 1]
+            _, c_a, _ = centroids[i]
+            _, c_b, _ = centroids[i + 1]
             ax.annotate(
                 "", xy=c_b, xytext=c_a,
                 arrowprops=dict(
-                    arrowstyle="-|>", color="black", lw=1.3, mutation_scale=13,
+                    arrowstyle="-|>", color="#2c3e50",
+                    lw=1.6, mutation_scale=15,
                 ),
-                zorder=5,
+                zorder=4,
             )
-        # Word label at last known centroid
-        if centroids:
-            last = centroids[-1][1]
-            ax.text(last[0], last[1] - 0.008, f'"{word}"',
-                    ha="center", va="top", fontsize=9,
-                    fontstyle="italic", color="black", zorder=7)
 
-    # -- Legend: colours = years, shapes = target words --
-    year_handles = [
-        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=year_color[yr],
-                   markersize=8, label=str(yr))
-        for yr in TRAJECTORY_YEARS
-    ]
-    shape_handles = [
-        plt.Line2D([0], [0], marker=traj_styles[i], color="w",
-                   markerfacecolor="grey", markersize=8, label=f'"{w}"')
-        for i, w in enumerate(TRAJECTORY_WORDS)
-    ]
-    anchor_handle = plt.Line2D([0], [0], marker="s", color="w",
-                               markerfacecolor="grey", markersize=8,
-                               label="anchor word")
-    ax.legend(handles=year_handles + shape_handles + [anchor_handle],
-              fontsize=8, loc="best", ncol=2)
+        ax.set_title(f'"{word}"', fontsize=12, fontweight="bold")
+        ax.set_xlabel("PC1", fontsize=10)
+        ax.set_ylabel("PC2", fontsize=10)
+        ax.grid(alpha=0.2)
 
-    ax.set_xlabel("PC1", fontsize=10)
-    ax.set_ylabel("PC2", fontsize=10)
-    ax.grid(alpha=0.25)
+        # Legend: years only (anchors explained via title/colours)
+        year_handles = [
+            plt.Line2D([0], [0], marker="o", color="w",
+                       markerfacecolor=year_color[yr], markersize=9, label=str(yr))
+            for yr in TRAJECTORY_YEARS
+        ]
+        anchor_handles = [
+            plt.Line2D([0], [0], marker="s", color="w",
+                       markerfacecolor=col, markersize=8, alpha=0.6, label=grp)
+            for grp, col in anchor_group_colors.items()
+        ]
+        ax.legend(handles=year_handles + anchor_handles,
+                  fontsize=8, loc="best", framealpha=0.9)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
