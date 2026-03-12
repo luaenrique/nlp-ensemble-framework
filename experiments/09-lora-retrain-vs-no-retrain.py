@@ -186,6 +186,7 @@ def run_condition(model, do_retrain: bool, label: str):
     adapt_extra_windows = max(0, -(-ADAPT_SAMPLES // WINDOW_SIZE) - 1)  # ceiling div - 1
 
     accuracies   = []
+    positions    = []
     adapt_events = []
     skip_until   = -1   # windows <= this index are skipped (used for training)
 
@@ -214,7 +215,7 @@ def run_condition(model, do_retrain: bool, label: str):
             # Shuffle so burn-in and new samples are interleaved
             perm       = np.random.permutation(len(X_adapt))
             X_adapt, y_adapt = X_adapt[perm], y_adapt[perm]
-            skip_until = i + adapt_extra_windows
+            skip_until = i + adapt_extra_windows   # skip only the lookahead windows, not current
             print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} → retraining on {len(X_new)} new + {n_replay} replay = {len(X_adapt)} samples …")
             train_model(model, tokenizer, X_adapt, y_adapt, label="adapt", lr=5e-5, epochs=1)
             new_np, _ = encode_and_predict(X_adapt, model, tokenizer)
@@ -229,24 +230,25 @@ def run_condition(model, do_retrain: bool, label: str):
             continue
 
         accuracies.append(acc)
+        positions.append(pos)
         print(f"  [{label}] w{i+1:>3}/{n_windows}  acc={acc:.3f}  mmd={mmd:.4f}")
 
     mean_acc = float(np.mean(accuracies))
     print(f"\n  [{label}] Mean accuracy: {mean_acc:.4f}  (ref baseline: {ref_acc:.4f})")
-    return accuracies, adapt_events, mean_acc, ref_acc
+    return accuracies, positions, adapt_events, mean_acc, ref_acc
 
 
 # ── Condition A: WITH retraining ───────────────────────────────────────────────
 print("=" * 60)
 print("Condition A: WITH LoRA retraining on drift")
 print("=" * 60)
-acc_retrain, adapt_A, mean_A, ref_acc = run_condition(base_model, do_retrain=True,  label="WITH-RETRAIN")
+acc_retrain, pos_retrain, adapt_A, mean_A, ref_acc = run_condition(base_model, do_retrain=True,  label="WITH-RETRAIN")
 
 # ── Condition B: WITHOUT retraining ───────────────────────────────────────────
 print("\n" + "=" * 60)
 print("Condition B: WITHOUT retraining")
 print("=" * 60)
-acc_no_retrain, adapt_B, mean_B, _ = run_condition(base_model, do_retrain=False, label="NO-RETRAIN")
+acc_no_retrain, pos_no_retrain, adapt_B, mean_B, _ = run_condition(base_model, do_retrain=False, label="NO-RETRAIN")
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
@@ -260,19 +262,17 @@ print(f"  Delta (WITH - WITHOUT):          {delta:+.4f}  "
       f"({'retrain helps' if delta > 0 else 'retrain hurts or no effect'})")
 
 # ── Plot ────────────────────────────────────────────────────────────────────────
-window_positions = [BURNIN_SIZE + i * WINDOW_SIZE + WINDOW_SIZE // 2
-                    for i in range(n_windows)]
-
 fig, ax = plt.subplots(figsize=(14, 5))
-ax.plot(window_positions, acc_retrain,    label=f"WITH retraining  (mean={mean_A:.3f})",
+ax.plot(pos_retrain,    acc_retrain,    label=f"WITH retraining  (mean={mean_A:.3f})",
         color="steelblue", linewidth=1.5)
-ax.plot(window_positions, acc_no_retrain, label=f"WITHOUT retraining (mean={mean_B:.3f})",
+ax.plot(pos_no_retrain, acc_no_retrain, label=f"WITHOUT retraining (mean={mean_B:.3f})",
         color="tomato",    linewidth=1.5, linestyle="--")
 ax.axhline(ref_acc, color="gray", linestyle=":", linewidth=1,
            label=f"Reference acc ({ref_acc:.3f})")
 
 for idx in adapt_A:
-    ax.axvline(x=window_positions[idx], color="steelblue", linestyle=":", alpha=0.5)
+    adapt_pos = BURNIN_SIZE + idx * WINDOW_SIZE + WINDOW_SIZE // 2
+    ax.axvline(x=adapt_pos, color="steelblue", linestyle=":", alpha=0.5)
 
 ax.set_title("ModernBERT: LoRA retraining vs. no retraining\n"
              f"(burn-in={BURNIN_SIZE}, window={WINDOW_SIZE})", fontsize=12)
