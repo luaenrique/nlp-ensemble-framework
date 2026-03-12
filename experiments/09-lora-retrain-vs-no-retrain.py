@@ -14,7 +14,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import pdist
 
-from river.drift import ADWIN
 
 from peft import get_peft_model, LoraConfig, TaskType
 from torch.optim import AdamW
@@ -32,7 +31,7 @@ WINDOW_SIZE  = 200
 N_REF_EMB    = 200
 TRAIN_EPOCHS = 3
 TRAIN_BATCH  = 16
-MMD_THRESHOLD = 0.1
+MMD_THRESHOLD = 0.2
 
 # ── Device ─────────────────────────────────────────────────────────────────────
 if torch.backends.mps.is_available():
@@ -183,7 +182,6 @@ def run_condition(model, do_retrain: bool, label: str):
     ref_acc = (np.array([inv_label_map[p] for p in ref_preds]) == burnin_labels[:N_REF_EMB]).mean()
     gamma   = _estimate_gamma(ref_np)
 
-    detector     = ADWIN(delta=0.001)
     accuracies   = []
     adapt_events = []
 
@@ -197,18 +195,17 @@ def run_condition(model, do_retrain: bool, label: str):
         acc        = (preds_orig == y_win).mean()
         mmd        = compute_mmd(ref_np, win_np, gamma)
 
-        detector.update(mmd)
         pos = BURNIN_SIZE + start + WINDOW_SIZE // 2
+        drift_detected = mmd > MMD_THRESHOLD
 
-        if detector.drift_detected and do_retrain:
+        if drift_detected and do_retrain:
             print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} → retraining …")
             train_model(model, tokenizer, X_win, y_win, label="adapt")
             new_np, _ = encode_and_predict(X_win, model, tokenizer)
             ref_np  = new_np
             gamma   = _estimate_gamma(ref_np)
-            detector = ADWIN(delta=0.001)
             adapt_events.append(i)
-        elif detector.drift_detected:
+        elif drift_detected:
             print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} (no retrain)")
 
         accuracies.append(acc)
