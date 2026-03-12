@@ -374,42 +374,6 @@ TRAJECTORY_YEARS  = [2009, 2026]   # only compare the two extreme years
 TRAJECTORY_COLORS = {"2009": "#3498db", "2026": "#e74c3c"}
 MAX_TWEETS_PER_YEAR = 150  # cap per (word, year) to keep encoding fast
 
-# Anchor words: semantic landmarks plotted as fixed labeled points.
-# Chosen to cover the two poles (non-tech vs tech) and ambiguous territory.
-ANCHOR_WORDS = {
-    # non-tech
-    "fashion": "#c0392b",
-    "music":   "#c0392b",
-    "art":     "#c0392b",
-    "game":    "#c0392b",
-    # ambiguous
-    "language": "#7f8c8d",
-    "data":     "#7f8c8d",
-    "research": "#7f8c8d",
-    "design":   "#7f8c8d",
-    # tech / ML
-    "neural":        "#1abc9c",
-    "ai":            "#1abc9c",
-    "machine":       "#1abc9c",
-    "code":          "#1abc9c",
-    "intelligence":  "#1abc9c",
-    "software":      "#1abc9c",
-}
-
-
-def _encode_texts_only(texts, model, tokenizer, batch_size=32) -> np.ndarray:
-    """Encode texts and return CLS embeddings (used for anchor words)."""
-    all_embs = []
-    model.eval()
-    for i in range(0, len(texts), batch_size):
-        batch  = list(texts[i : i + batch_size])
-        inputs = tokenizer(batch, padding=True, truncation=True,
-                           max_length=128, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        with torch.no_grad():
-            out = model(**inputs, output_hidden_states=True)
-        all_embs.append(out.hidden_states[-1][:, 0, :].cpu().numpy())
-    return np.vstack(all_embs)
 
 
 def _get_word_token_embeddings(
@@ -470,24 +434,16 @@ def _get_word_token_embeddings(
 
 def plot_word_trajectories(model, tokenizer, encoder_name: str, out_path: str) -> None:
     """
-    Interactive Plotly chart (saved as HTML) with 3 subplots — one per target
-    word.  Each subplot shows:
+    Interactive Plotly chart (HTML) — 3 subplots, one per target word.
 
-    - Anchor words (bare-word CLS embeddings) as faint labeled background dots,
-      grouped by semantic pole (non-tech / ambiguous / tech-ML).
-    - Per-tweet token embeddings of the target word, coloured by year
-      (2009 = blue, 2026 = red).  Hovering shows the tweet text.
-    - PCA fitted on anchors + all token embeddings so the coordinate system
-      is shared across subplots.
+    Each subplot shows the contextual token embedding of the word extracted
+    from each tweet, projected to 2D with PCA fitted only on those embeddings.
+    Points are coloured by year (2009 = blue, 2026 = red); hovering shows the
+    tweet text.  A centroid marker per year shows the mean shift.
     """
     rng = np.random.default_rng(seed=0)
 
-    # ── 1. Encode anchor words (CLS of single word) ───────────────────────────
-    anchor_list = list(ANCHOR_WORDS.keys())
-    print(f"  [TRAJECTORY] Encoding {len(anchor_list)} anchor words …")
-    anchor_embs = _encode_texts_only(np.array(anchor_list), model, tokenizer)
-
-    # ── 2. Get word-token embeddings per (target, year) ───────────────────────
+    # ── 1. Collect token embeddings per (word, year) ──────────────────────────
     word_year_embs:  dict[tuple[str, int], np.ndarray] = {}
     word_year_texts: dict[tuple[str, int], list[str]]  = {}
 
@@ -501,7 +457,7 @@ def plot_word_trajectories(model, tokenizer, encoder_name: str, out_path: str) -
             if len(rows) > MAX_TWEETS_PER_YEAR:
                 rows = rng.choice(rows, MAX_TWEETS_PER_YEAR, replace=False)
 
-            print(f"  [TRAJECTORY] Encoding '{word}' {year} ({len(rows)} tweets) …")
+            print(f"  [TRAJECTORY] '{word}' {year} — {len(rows)} tweets …")
             embs, valid_texts = _get_word_token_embeddings(
                 list(rows), word, model, tokenizer
             )
@@ -514,115 +470,90 @@ def plot_word_trajectories(model, tokenizer, encoder_name: str, out_path: str) -
         print("  [TRAJECTORY] No embeddings found — skipping.")
         return
 
-    # ── 3. Fit shared PCA ─────────────────────────────────────────────────────
-    all_embs_stack = np.vstack(
-        [anchor_embs] + list(word_year_embs.values())
-    )
-    pca = PCA(n_components=2, random_state=42)
-    pca.fit(all_embs_stack)
-    var = pca.explained_variance_ratio_
-
-    anchor_2d = pca.transform(anchor_embs)  # (n_anchors, 2)
-
-    # ── 4. Build Plotly figure ────────────────────────────────────────────────
+    # ── 2. Build figure ───────────────────────────────────────────────────────
     fig = make_subplots(
         rows=1, cols=len(TRAJECTORY_WORDS),
         subplot_titles=[f'"{w}"' for w in TRAJECTORY_WORDS],
-        shared_xaxes=False, shared_yaxes=False,
-        horizontal_spacing=0.08,
+        horizontal_spacing=0.06,
     )
 
-    anchor_group_color = {w: c for w, c in ANCHOR_WORDS.items()}
-    anchor_group_label = {
-        c: grp for grp, c in {
-            "non-tech":  "#c0392b",
-            "ambiguous": "#7f8c8d",
-            "tech/ML":   "#1abc9c",
-        }.items()
-    }
-
     for col_idx, word in enumerate(TRAJECTORY_WORDS):
-        col = col_idx + 1
-        show_legend = col_idx == 0   # add legend entries only once
+        col         = col_idx + 1
+        show_legend = col_idx == 0
 
-        # -- Anchor background --
-        for i, aword in enumerate(anchor_list):
-            color = anchor_group_color[aword]
-            grp   = anchor_group_label.get(color, "anchor")
-            fig.add_trace(
-                go.Scatter(
-                    x=[anchor_2d[i, 0]], y=[anchor_2d[i, 1]],
-                    mode="markers+text",
-                    marker=dict(symbol="square", size=8,
-                                color=color, opacity=0.35,
-                                line=dict(width=0)),
-                    text=[aword], textposition="middle right",
-                    textfont=dict(size=9, color=color),
-                    hoverinfo="text",
-                    hovertext=[f"anchor: {aword}"],
-                    legendgroup=grp,
-                    legendgrouptitle_text=grp if (show_legend and i == 0) else None,
-                    name=grp,
-                    showlegend=show_legend and (
-                        anchor_list.index(aword) == [
-                            list(ANCHOR_WORDS.values()).index(color)
-                            for color in {ANCHOR_WORDS[w]: None
-                                          for w in anchor_list}.keys()
-                        ][0]
-                    ),
-                ),
-                row=1, col=col,
-            )
+        # Fit PCA per word (only on this word's embeddings — no mixing)
+        word_embs = [word_year_embs[(word, yr)]
+                     for yr in TRAJECTORY_YEARS if (word, yr) in word_year_embs]
+        if not word_embs:
+            continue
+        pca = PCA(n_components=2, random_state=42)
+        pca.fit(np.vstack(word_embs))
+        var = pca.explained_variance_ratio_
 
-        # -- Token embedding clouds per year --
         for year in TRAJECTORY_YEARS:
             if (word, year) not in word_year_embs:
                 continue
-            pts_2d = pca.transform(word_year_embs[(word, year)])
-            tweets = word_year_texts[(word, year)]
-            color  = TRAJECTORY_COLORS[str(year)]
-            label  = str(year)
 
-            # Truncate tweet text for hover (long tweets are noisy)
-            hover = [t[:120] + "…" if len(t) > 120 else t for t in tweets]
+            pts_2d   = pca.transform(word_year_embs[(word, year)])
+            tweets   = word_year_texts[(word, year)]
+            color    = TRAJECTORY_COLORS[str(year)]
+            centroid = pts_2d.mean(axis=0)
+            hover    = [t[:140] + "…" if len(t) > 140 else t for t in tweets]
 
+            # Individual points
             fig.add_trace(
                 go.Scatter(
                     x=pts_2d[:, 0], y=pts_2d[:, 1],
                     mode="markers",
-                    marker=dict(size=6, color=color, opacity=0.55,
-                                line=dict(width=0.4, color="white")),
-                    hovertemplate=f"<b>{year}</b><br>%{{customdata}}<extra></extra>",
-                    customdata=hover,
-                    legendgroup=label,
-                    name=label,
+                    marker=dict(size=5, color=color, opacity=0.45,
+                                line=dict(width=0)),
+                    name=str(year),
+                    legendgroup=str(year),
                     showlegend=show_legend,
+                    hovertemplate="<b>" + str(year) + "</b><br>%{customdata}<extra></extra>",
+                    customdata=hover,
                 ),
                 row=1, col=col,
             )
 
+            # Centroid marker
+            fig.add_trace(
+                go.Scatter(
+                    x=[centroid[0]], y=[centroid[1]],
+                    mode="markers+text",
+                    marker=dict(size=14, color=color, symbol="diamond",
+                                line=dict(width=1.5, color="white")),
+                    text=[str(year)],
+                    textposition="top center",
+                    textfont=dict(size=10, color=color),
+                    legendgroup=str(year),
+                    showlegend=False,
+                    hovertemplate=f"<b>centroid {year}</b><extra></extra>",
+                ),
+                row=1, col=col,
+            )
+
+        fig.update_xaxes(
+            showticklabels=False,
+            title_text=f"PC1 {var[0]:.0%} | PC2 {var[1]:.0%}",
+            row=1, col=col,
+        )
+        fig.update_yaxes(showticklabels=False, row=1, col=col)
+
     fig.update_layout(
         title=dict(
             text=(
-                f"Contextual token embeddings — {encoder_name}<br>"
-                f"<sup>PCA: PC1 {var[0]:.1%} var · PC2 {var[1]:.1%} var"
-                f" | hover = tweet text</sup>"
+                f"Contextual token shift — {encoder_name}<br>"
+                "<sup>each point = embedding of the word token inside one tweet"
+                " · hover to read it</sup>"
             ),
-            font=dict(size=14),
+            font=dict(size=13),
         ),
-        height=550,
-        width=400 * len(TRAJECTORY_WORDS),
+        height=520,
+        width=420 * len(TRAJECTORY_WORDS),
         template="plotly_white",
-        legend=dict(
-            groupclick="toggleitem",
-            tracegroupgap=8,
-        ),
+        legend=dict(title="year", tracegroupgap=4),
     )
-
-    # Remove axis tick labels (PCA axes are not interpretable)
-    for i in range(1, len(TRAJECTORY_WORDS) + 1):
-        fig.update_xaxes(showticklabels=False, title_text="PC1", row=1, col=i)
-        fig.update_yaxes(showticklabels=False, title_text="PC2", row=1, col=i)
 
     html_path = out_path.replace(".png", ".html")
     fig.write_html(html_path)
