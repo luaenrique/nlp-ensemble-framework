@@ -118,19 +118,24 @@ def encode_and_predict(texts, model, tokenizer, batch_size=32):
 
 
 def train_model(model, tokenizer, texts, labels, label="train"):
-    optimizer = AdamW(model.parameters(), lr=2e-4)
+    # Only optimize trainable (LoRA) params — base model is frozen
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    optimizer = AdamW(trainable, lr=2e-4)
     model.train()
     for epoch in range(TRAIN_EPOCHS):
+        epoch_loss = 0.0
         for i in range(0, len(texts), TRAIN_BATCH):
             bt = list(texts[i : i + TRAIN_BATCH])
             bl = torch.tensor([label_map[l] for l in labels[i : i + TRAIN_BATCH]]).to(device)
             inp = tokenizer(bt, padding=True, truncation=True,
                             max_length=512, return_tensors="pt")
             inp = {k: v.to(device) for k, v in inp.items()}
-            model(**inp, labels=bl).loss.backward()
+            loss = model(**inp, labels=bl).loss
+            loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-        print(f"    [{label}] Epoch {epoch+1}/{TRAIN_EPOCHS}")
+            epoch_loss += loss.item()
+        print(f"    [{label}] Epoch {epoch+1}/{TRAIN_EPOCHS}  loss={epoch_loss:.4f}")
 
 
 # ── Build and train base model (shared starting point) ────────────────────────
@@ -151,11 +156,28 @@ print("\nTraining on burn-in window …")
 train_model(base_model, tokenizer, burnin_texts, burnin_labels, label="burnin")
 print("Burn-in training done.\n")
 
+# Save state after burn-in — deepcopy of PEFT models on MPS/CUDA is unreliable;
+# state_dict approach guarantees a clean copy on the correct device.
+burnin_state = {k: v.clone() for k, v in base_model.state_dict().items()}
+
+
+def _fresh_model() -> torch.nn.Module:
+    """Create a new PEFT model loaded with the post-burn-in weights."""
+    m = ModernBertForSequenceClassification.from_pretrained(
+        MODEL_NAME, num_labels=num_labels
+    )
+    m = get_peft_model(m, LoraConfig(r=8, lora_alpha=16,
+                                     target_modules=lora_targets,
+                                     task_type=TaskType.SEQ_CLS))
+    m.load_state_dict(burnin_state)
+    return m.to(device)
+
+
 # ── Run one condition ──────────────────────────────────────────────────────────
 
 def run_condition(model, do_retrain: bool, label: str):
     """Run the stream evaluation loop with or without LoRA retraining on drift."""
-    model = copy.deepcopy(model)   # isolate conditions
+    model = _fresh_model()   # isolated copy via state_dict — safe on MPS/CUDA
 
     ref_np, ref_preds = encode_and_predict(burnin_texts[:N_REF_EMB], model, tokenizer)
     ref_acc = (np.array([inv_label_map[p] for p in ref_preds]) == burnin_labels[:N_REF_EMB]).mean()
