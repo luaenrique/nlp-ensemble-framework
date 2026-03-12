@@ -32,7 +32,7 @@ N_REF_EMB    = 200
 TRAIN_EPOCHS  = 3
 TRAIN_BATCH   = 16
 MMD_THRESHOLD = 0.1
-ADAPT_SAMPLES = 600   # samples to collect for LoRA adaptation (rounded up to nearest window)
+ADAPT_SAMPLES = 1000   # samples to collect for LoRA adaptation (rounded up to nearest window)
 
 # ── Device ─────────────────────────────────────────────────────────────────────
 if torch.backends.mps.is_available():
