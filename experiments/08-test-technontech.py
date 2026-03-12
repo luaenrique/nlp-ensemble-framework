@@ -364,6 +364,135 @@ def make_detector(name: str) -> DriftDetectorBase:
     raise ValueError(f"Unknown detector: {name!r}. Choose 'adwin' or 'ddm'.")
 
 
+# ── Word trajectory visualization ─────────────────────────────────────────────
+
+TRAJECTORY_WORDS  = ["model", "agent", "learning"]
+TRAJECTORY_YEARS  = sorted(com_df["year"].unique().tolist())
+TRAJECTORY_COLORS = ["#3498db", "#2ecc71", "#e67e22", "#9b59b6"]  # one per year
+MAX_TWEETS_PER_YEAR = 100  # cap per (word, year) to keep encoding fast
+
+
+def _encode_texts_only(texts, model, tokenizer, batch_size=32) -> np.ndarray:
+    """Encode texts and return CLS embeddings as numpy array."""
+    all_embs = []
+    model.eval()
+    for i in range(0, len(texts), batch_size):
+        batch  = list(texts[i : i + batch_size])
+        inputs = tokenizer(batch, padding=True, truncation=True,
+                           max_length=128, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        with torch.no_grad():
+            out = model(**inputs, output_hidden_states=True)
+        all_embs.append(out.hidden_states[-1][:, 0, :].cpu().numpy())
+    return np.vstack(all_embs)
+
+
+def plot_word_trajectories(model, tokenizer, encoder_name: str, out_path: str) -> None:
+    """
+    For each word in TRAJECTORY_WORDS, collect tweets containing that word
+    from each year, encode them, project to 2D with PCA, and plot the
+    per-year clusters together with centroid-to-centroid arrows showing
+    how the semantic neighbourhood of each word shifts over time.
+
+    One subplot per word; all subplots share the same PCA fitted on the
+    union of all word/year embeddings so positions are comparable.
+    """
+    rng = np.random.default_rng(seed=0)
+
+    # ── Collect (word, year) → texts ──────────────────────────────────────────
+    word_year_texts: dict[tuple[str, int], np.ndarray] = {}
+    for word in TRAJECTORY_WORDS:
+        mask = com_df["text"].str.contains(rf"\b{word}\b", case=False, regex=True)
+        sub  = com_df[mask]
+        for year in TRAJECTORY_YEARS:
+            rows = sub[sub["year"] == year]["text"].values
+            if len(rows) == 0:
+                continue
+            if len(rows) > MAX_TWEETS_PER_YEAR:
+                rows = rng.choice(rows, MAX_TWEETS_PER_YEAR, replace=False)
+            word_year_texts[(word, year)] = rows
+
+    if not word_year_texts:
+        print("  [TRAJECTORY] No tweets found for any word/year combination — skipping.")
+        return
+
+    # ── Encode all at once (one big batch) ────────────────────────────────────
+    all_keys   = list(word_year_texts.keys())
+    all_texts_flat  = np.concatenate([word_year_texts[k] for k in all_keys])
+    all_sizes  = [len(word_year_texts[k]) for k in all_keys]
+
+    print(f"  [TRAJECTORY] Encoding {len(all_texts_flat):,} tweets for word trajectories …")
+    all_embs = _encode_texts_only(all_texts_flat, model, tokenizer)
+
+    # ── Split back into (word, year) chunks ───────────────────────────────────
+    word_year_embs: dict[tuple[str, int], np.ndarray] = {}
+    cursor = 0
+    for key, size in zip(all_keys, all_sizes):
+        word_year_embs[key] = all_embs[cursor : cursor + size]
+        cursor += size
+
+    # ── Fit PCA on all embeddings together ────────────────────────────────────
+    pca    = PCA(n_components=2, random_state=42)
+    pca.fit(all_embs)
+    var    = pca.explained_variance_ratio_
+
+    # ── Plot ──────────────────────────────────────────────────────────────────
+    n_words = len(TRAJECTORY_WORDS)
+    fig, axes = plt.subplots(1, n_words, figsize=(7 * n_words, 6), squeeze=False)
+    fig.suptitle(
+        f"Word trajectory in latent space — {encoder_name}\n"
+        f"PC1 ({var[0]:.1%} var)  ·  PC2 ({var[1]:.1%} var)",
+        fontsize=13,
+    )
+
+    year_color = {yr: col for yr, col in zip(TRAJECTORY_YEARS, TRAJECTORY_COLORS)}
+
+    for col_idx, word in enumerate(TRAJECTORY_WORDS):
+        ax = axes[0][col_idx]
+        centroids: list[tuple[int, np.ndarray]] = []
+
+        for year in TRAJECTORY_YEARS:
+            if (word, year) not in word_year_embs:
+                continue
+            embs_2d  = pca.transform(word_year_embs[(word, year)])
+            centroid = embs_2d.mean(axis=0)
+            centroids.append((year, centroid))
+            color = year_color[year]
+
+            ax.scatter(
+                embs_2d[:, 0], embs_2d[:, 1],
+                s=20, alpha=0.35, color=color,
+                label=f"{year}  (n={len(embs_2d)})",
+            )
+            ax.scatter(*centroid, s=120, color=color, edgecolors="black",
+                       linewidths=0.8, zorder=5)
+
+        # Draw arrows between consecutive year centroids
+        for i in range(len(centroids) - 1):
+            yr_a, c_a = centroids[i]
+            yr_b, c_b = centroids[i + 1]
+            ax.annotate(
+                "", xy=c_b, xytext=c_a,
+                arrowprops=dict(
+                    arrowstyle="-|>",
+                    color="black",
+                    lw=1.4,
+                    mutation_scale=14,
+                ),
+            )
+
+        ax.set_title(f'"{word}"', fontsize=12, fontweight="bold")
+        ax.set_xlabel(f"PC1", fontsize=10)
+        ax.set_ylabel(f"PC2", fontsize=10)
+        ax.legend(fontsize=8, loc="best")
+        ax.grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    print(f"  [TRAJECTORY] Saved → {out_path}")
+
+
 # ── Encoder helpers ────────────────────────────────────────────────────────────
 
 def encode_and_predict(texts, model, tokenizer, batch_size=32):
@@ -595,6 +724,10 @@ for enc in ENCODERS:
     print(f"Reference accuracy: {ref_acc:.3f}  |  entropy: {ref_entropy:.4f}")
 
     ref_np = ref_embs_t.cpu().numpy()
+
+    # ── Word trajectory visualization (2009 → 2026) ───────────────────────────
+    traj_out = enc["out_path"].replace(".png", "_word_trajectory.png")
+    plot_word_trajectories(model, tokenizer, enc["name"], traj_out)
 
     # ── Stream evaluation ──────────────────────────────────────────────────────
     window_positions  = []
