@@ -117,9 +117,7 @@ def encode_and_predict(texts, model, tokenizer, batch_size=32):
 
 
 def train_model(model, tokenizer, texts, labels, label="train"):
-    # Only optimize trainable (LoRA) params — base model is frozen
-    trainable = [p for p in model.parameters() if p.requires_grad]
-    optimizer = AdamW(trainable, lr=2e-4)
+    optimizer = AdamW(model.parameters(), lr=2e-4)
     model.train()
     for epoch in range(TRAIN_EPOCHS):
         epoch_loss = 0.0
@@ -199,9 +197,14 @@ def run_condition(model, do_retrain: bool, label: str):
         drift_detected = mmd > MMD_THRESHOLD
 
         if drift_detected and do_retrain:
-            print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} → retraining …")
-            train_model(model, tokenizer, X_win, y_win, label="adapt")
-            new_np, _ = encode_and_predict(X_win, model, tokenizer)
+            # Use current window + next window (up to 400 samples) for retraining
+            next_start = start + WINDOW_SIZE
+            next_end   = next_start + WINDOW_SIZE
+            X_adapt = np.concatenate([X_win, stream_texts[next_start:next_end]])
+            y_adapt = np.concatenate([y_win, stream_labels[next_start:next_end]])
+            print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} → retraining on {len(X_adapt)} samples …")
+            train_model(model, tokenizer, X_adapt, y_adapt, label="adapt")
+            new_np, _ = encode_and_predict(X_adapt, model, tokenizer)
             ref_np  = new_np
             gamma   = _estimate_gamma(ref_np)
             adapt_events.append(i)
