@@ -844,17 +844,17 @@ for enc in ENCODERS:
 
         # ── Detect-then-adapt: retrain LoRA on confirmed drift ─────────────────
         if detector.drift_detected:
-            print(f"  [ADAPT] Retraining LoRA …")
-            train_model(model, tokenizer, X_win, y_win, label="adapt")
+            print(f"  [ADAPT] Fake Retraining LoRA …")
+            #train_model(model, tokenizer, X_win, y_win, label="adapt")
             # Re-encode with updated model to get new reference distribution
-            new_ref_t, new_ref_preds, new_ref_entropies = encode_and_predict(X_win, model, tokenizer)
-            ref_np      = new_ref_t.cpu().numpy()
-            ref_entropy = new_ref_entropies.mean()
-            new_preds_orig = np.array([inv_label_map[p] for p in new_ref_preds])
-            ref_acc     = (new_preds_orig == y_win).mean()
-            gamma  = _estimate_gamma(ref_np)
-            detector.reset()
-            adapt_positions.append(pos)
+            #new_ref_t, new_ref_preds, new_ref_entropies = encode_and_predict(X_win, model, tokenizer)
+            #ref_np      = new_ref_t.cpu().numpy()
+            #ref_entropy = new_ref_entropies.mean()
+            #new_preds_orig = np.array([inv_label_map[p] for p in new_ref_preds])
+            #ref_acc     = (new_preds_orig == y_win).mean()
+            #gamma  = _estimate_gamma(ref_np)
+            #detector.reset()
+            #adapt_positions.append(pos)
             print(f"  [ADAPT] Done — new reference set, gamma and detector reset.")
 
         window_accuracies.append(acc)
