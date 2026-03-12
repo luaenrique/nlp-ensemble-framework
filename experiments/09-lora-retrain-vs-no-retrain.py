@@ -29,9 +29,10 @@ MODEL_NAME   = "answerdotai/ModernBERT-base"
 BURNIN_SIZE  = 1000
 WINDOW_SIZE  = 200
 N_REF_EMB    = 200
-TRAIN_EPOCHS = 3
-TRAIN_BATCH  = 16
+TRAIN_EPOCHS  = 3
+TRAIN_BATCH   = 16
 MMD_THRESHOLD = 0.1
+ADAPT_SAMPLES = 600   # samples to collect for LoRA adaptation (rounded up to nearest window)
 
 # ── Device ─────────────────────────────────────────────────────────────────────
 if torch.backends.mps.is_available():
@@ -181,8 +182,12 @@ def run_condition(model, do_retrain: bool, label: str):
     ref_acc = (np.array([inv_label_map[p] for p in ref_preds]) == burnin_labels[:N_REF_EMB]).mean()
     gamma   = _estimate_gamma(ref_np)
 
+    # number of extra windows to collect for adaptation (beyond the drift window itself)
+    adapt_extra_windows = max(0, -(-ADAPT_SAMPLES // WINDOW_SIZE) - 1)  # ceiling div - 1
+
     accuracies   = []
     adapt_events = []
+    skip_until   = -1   # windows <= this index are skipped (used for training)
 
     for i in range(n_windows):
         start = i * WINDOW_SIZE
@@ -197,20 +202,23 @@ def run_condition(model, do_retrain: bool, label: str):
         pos = BURNIN_SIZE + start + WINDOW_SIZE // 2
         drift_detected = mmd > MMD_THRESHOLD
 
-        if drift_detected and do_retrain:
-            # Use current window + next window (up to 400 samples) for retraining
-            next_start = start + WINDOW_SIZE
-            next_end   = next_start + WINDOW_SIZE
-            X_adapt = np.concatenate([X_win, stream_texts[next_start:next_end]])
-            y_adapt = np.concatenate([y_win, stream_labels[next_start:next_end]])
-            print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} → retraining on {len(X_adapt)} samples …")
+        if drift_detected and do_retrain and i > skip_until:
+            adapt_end = start + WINDOW_SIZE * (1 + adapt_extra_windows)
+            X_adapt   = stream_texts[start : adapt_end]
+            y_adapt   = stream_labels[start : adapt_end]
+            skip_until = i + adapt_extra_windows   # skip windows used for training
+            print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} → retraining on {len(X_adapt)} samples (skipping {adapt_extra_windows} next windows) …")
             train_model(model, tokenizer, X_adapt, y_adapt, label="adapt", lr=5e-5, epochs=1)
             new_np, _ = encode_and_predict(X_adapt, model, tokenizer)
             ref_np  = new_np
             gamma   = _estimate_gamma(ref_np)
             adapt_events.append(i)
-        elif drift_detected:
+        elif drift_detected and not do_retrain:
             print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} (no retrain)")
+
+        if i <= skip_until:
+            print(f"  [{label}] w{i+1:>3}/{n_windows}  [skipped — used for training]")
+            continue
 
         accuracies.append(acc)
         print(f"  [{label}] w{i+1:>3}/{n_windows}  acc={acc:.3f}  mmd={mmd:.4f}")
