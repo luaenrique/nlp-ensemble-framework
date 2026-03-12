@@ -116,10 +116,11 @@ def encode_and_predict(texts, model, tokenizer, batch_size=32):
     return torch.cat(all_embs, dim=0).numpy(), np.concatenate(all_preds)
 
 
-def train_model(model, tokenizer, texts, labels, label="train"):
-    optimizer = AdamW(model.parameters(), lr=2e-4)
+def train_model(model, tokenizer, texts, labels, label="train", lr=2e-4, epochs=None):
+    optimizer = AdamW(model.parameters(), lr=lr)
+    n_epochs = epochs if epochs is not None else TRAIN_EPOCHS
     model.train()
-    for epoch in range(TRAIN_EPOCHS):
+    for epoch in range(n_epochs):
         epoch_loss = 0.0
         for i in range(0, len(texts), TRAIN_BATCH):
             bt = list(texts[i : i + TRAIN_BATCH])
@@ -132,7 +133,7 @@ def train_model(model, tokenizer, texts, labels, label="train"):
             optimizer.step()
             optimizer.zero_grad()
             epoch_loss += loss.item()
-        print(f"    [{label}] Epoch {epoch+1}/{TRAIN_EPOCHS}  loss={epoch_loss:.4f}")
+        print(f"    [{label}] Epoch {epoch+1}/{n_epochs}  loss={epoch_loss:.4f}")
 
 
 # ── Build and train base model (shared starting point) ────────────────────────
@@ -203,7 +204,7 @@ def run_condition(model, do_retrain: bool, label: str):
             X_adapt = np.concatenate([X_win, stream_texts[next_start:next_end]])
             y_adapt = np.concatenate([y_win, stream_labels[next_start:next_end]])
             print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} → retraining on {len(X_adapt)} samples …")
-            train_model(model, tokenizer, X_adapt, y_adapt, label="adapt")
+            train_model(model, tokenizer, X_adapt, y_adapt, label="adapt", lr=5e-5, epochs=1)
             new_np, _ = encode_and_predict(X_adapt, model, tokenizer)
             ref_np  = new_np
             gamma   = _estimate_gamma(ref_np)
