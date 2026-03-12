@@ -203,11 +203,19 @@ def run_condition(model, do_retrain: bool, label: str):
         drift_detected = mmd > MMD_THRESHOLD
 
         if drift_detected and do_retrain and i > skip_until:
-            adapt_end = start + WINDOW_SIZE * (1 + adapt_extra_windows)
-            X_adapt   = stream_texts[start : adapt_end]
-            y_adapt   = stream_labels[start : adapt_end]
-            skip_until = i + adapt_extra_windows   # skip windows used for training
-            print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} → retraining on {len(X_adapt)} samples (skipping {adapt_extra_windows} next windows) …")
+            adapt_end  = start + WINDOW_SIZE * (1 + adapt_extra_windows)
+            X_new      = stream_texts[start : adapt_end]
+            y_new      = stream_labels[start : adapt_end]
+            # Experience replay: mix in 50% burn-in samples to prevent catastrophic forgetting
+            n_replay   = len(X_new) // 2
+            replay_idx = np.random.choice(len(burnin_texts), n_replay, replace=False)
+            X_adapt    = np.concatenate([X_new, burnin_texts[replay_idx]])
+            y_adapt    = np.concatenate([y_new, burnin_labels[replay_idx]])
+            # Shuffle so burn-in and new samples are interleaved
+            perm       = np.random.permutation(len(X_adapt))
+            X_adapt, y_adapt = X_adapt[perm], y_adapt[perm]
+            skip_until = i + adapt_extra_windows
+            print(f"  [{label}] Drift @ window {i+1} (pos {pos:,}) mmd={mmd:.4f} → retraining on {len(X_new)} new + {n_replay} replay = {len(X_adapt)} samples …")
             train_model(model, tokenizer, X_adapt, y_adapt, label="adapt", lr=5e-5, epochs=1)
             new_np, _ = encode_and_predict(X_adapt, model, tokenizer)
             ref_np  = new_np
