@@ -31,7 +31,7 @@ WINDOW_SIZE  = 200
 N_REF_EMB    = 200
 TRAIN_EPOCHS = 3
 TRAIN_BATCH  = 16
-MMD_THRESHOLD = 0.2
+MMD_THRESHOLD = 0.1
 
 # ── Device ─────────────────────────────────────────────────────────────────────
 if torch.backends.mps.is_available():
