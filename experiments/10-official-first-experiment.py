@@ -199,41 +199,60 @@ def compute_kl_divergence(P: np.ndarray, Q: np.ndarray, eps: float = 1e-8) -> fl
     return float(0.5 * (kl_pq + kl_qp))
 
 
-def compute_js_divergence(P: np.ndarray, Q: np.ndarray, eps: float = 1e-8) -> float:
+def compute_js_divergence(P: np.ndarray, Q: np.ndarray, eps: float = 1e-8,
+                          n_samples: int = 2_000) -> float:
     """
-    Jensen-Shannon divergence using a closed-form moment-matched Gaussian
-    approximation, consistent with compute_kl_divergence.
+    Jensen-Shannon divergence estimated as the mean of per-dimension 1D JSDs.
 
         JSD(P||Q) = 0.5 * KL(P||M) + 0.5 * KL(Q||M)   where M = 0.5*(P+Q)
 
-    The mixture M is approximated as a diagonal Gaussian with matched moments:
-        mu_m  = 0.5 * (mu_p + mu_q)
-        var_m = 0.5 * (var_p + var_q) + 0.25 * (mu_p - mu_q)^2
+    Each embedding dimension is treated as an independent 1D Gaussian and JSD
+    is computed via Monte Carlo per dimension, then averaged. This avoids the
+    curse of dimensionality: summing log-probs over 768 dims makes logaddexp
+    saturate, collapsing the joint MC estimate to a constant. Per-dimension
+    computation keeps log-probs in a numerically safe range and uses the full
+    embedding without any projection.
 
-    This avoids the MC estimator, which collapses to a constant in high
-    dimensions (e.g. 768-dim embeddings) due to log-probability saturation.
+    Result is in [0, ln(2)] ≈ [0, 0.693].
 
     Args:
-        P   : Reference embeddings  shape (n, d)
-        Q   : Window embeddings     shape (m, d)
-        eps : Variance floor for numerical stability
+        P        : Reference embeddings  shape (n, d)
+        Q        : Window embeddings     shape (m, d)
+        eps      : Variance floor for numerical stability
+        n_samples: MC sample size per distribution
 
     Returns:
-        JSD estimate (float >= 0)
+        Mean per-dimension JSD (float in [0, ln(2)])
     """
     P = np.atleast_2d(P).astype(np.float64)
     Q = np.atleast_2d(Q).astype(np.float64)
 
     mu_p, var_p = P.mean(axis=0), P.var(axis=0) + eps
     mu_q, var_q = Q.mean(axis=0), Q.var(axis=0) + eps
+    std_p, std_q = np.sqrt(var_p), np.sqrt(var_q)
 
-    mu_m  = 0.5 * (mu_p + mu_q)
-    var_m = 0.5 * (var_p + var_q) + 0.25 * (mu_p - mu_q) ** 2 + eps
+    rng = np.random.default_rng(seed=42)
+    z = rng.standard_normal((n_samples, P.shape[1]))
+    S_p = z * std_p + mu_p   # (n_samples, d) — per-dim samples from P
+    S_q = z * std_q + mu_q   # (n_samples, d) — per-dim samples from Q
 
-    kl_p_m = 0.5 * np.sum(var_p / var_m + (mu_m - mu_p) ** 2 / var_m - 1.0 + np.log(var_m / var_p))
-    kl_q_m = 0.5 * np.sum(var_q / var_m + (mu_m - mu_q) ** 2 / var_m - 1.0 + np.log(var_m / var_q))
+    def log_prob_1d(X: np.ndarray, mu: np.ndarray, var: np.ndarray) -> np.ndarray:
+        # shape (n_samples, d) — one scalar log-prob per dim, NOT summed over dims
+        return -0.5 * (np.log(2.0 * np.pi * var) + (X - mu) ** 2 / var)
 
-    return float(np.clip(0.5 * (kl_p_m + kl_q_m), 0.0, None))
+    lp_sp = log_prob_1d(S_p, mu_p, var_p)
+    lq_sp = log_prob_1d(S_p, mu_q, var_q)
+    lp_sq = log_prob_1d(S_q, mu_p, var_p)
+    lq_sq = log_prob_1d(S_q, mu_q, var_q)
+
+    lm_sp = np.log(0.5) + np.logaddexp(lp_sp, lq_sp)   # (n_samples, d)
+    lm_sq = np.log(0.5) + np.logaddexp(lp_sq, lq_sq)   # (n_samples, d)
+
+    kl_p_m = (lp_sp - lm_sp).mean(axis=0)   # (d,)
+    kl_q_m = (lq_sq - lm_sq).mean(axis=0)   # (d,)
+
+    jsd_per_dim = np.clip(0.5 * (kl_p_m + kl_q_m), 0.0, np.log(2.0))
+    return float(jsd_per_dim.mean())
 
 
 def _detect_lora_targets(model: torch.nn.Module) -> list[str]:
@@ -485,7 +504,7 @@ def plot_drift_scatter(
 def plot_results(
     window_positions, window_accuracies, window_entropies,
     mmd_scores, kl_scores, js_scores, centroid_scores,
-    adapt_positions,
+    adapt_positions, jsd_warn_positions, jsd_drift_positions,
     ref_acc, ref_entropy,
     encoder_name, out_path,
 ):
@@ -536,6 +555,11 @@ def plot_results(
     ax5 = axes[4]
     ax5.plot(window_positions, js_scores, color="teal", linewidth=1.3, label="Jensen-Shannon divergence")
     ax5.fill_between(window_positions, js_scores, alpha=0.15, color="teal")
+    ax5.axhline(np.log(2), color="teal", linestyle=":", linewidth=1, alpha=0.5, label=f"Max JSD (ln 2 ≈ {np.log(2):.3f})")
+    for pos in jsd_warn_positions:
+        ax5.axvline(x=pos, color="gold", linestyle="--", linewidth=1.2, alpha=0.8)
+    for pos in jsd_drift_positions:
+        ax5.axvline(x=pos, color="darkcyan", linestyle="--", linewidth=1.5, alpha=0.9)
     ax5.set_ylabel("JSD (nats)", fontsize=11)
     ax5.legend(loc="upper left", fontsize=9)
     ax5.grid(alpha=0.3)
@@ -560,6 +584,10 @@ def plot_results(
         legend_patches.append(mpatches.Patch(color=col, label=label))
     if adapt_positions:
         legend_patches.append(mpatches.Patch(color="limegreen", label="LoRA adapted"))
+    if jsd_warn_positions:
+        legend_patches.append(mpatches.Patch(color="gold", label="JSD warning (ADWIN)"))
+    if jsd_drift_positions:
+        legend_patches.append(mpatches.Patch(color="darkcyan", label="JSD drift (ADWIN)"))
 
     x_ticks = np.arange(0, N_DRIFTED + 1, 25_000)
     ax6.set_xticks(x_ticks)
@@ -627,8 +655,11 @@ for enc in ENCODERS:
     centroid_scores   = []
     adapt_positions   = []
 
-    gamma    = _estimate_gamma(ref_np)  # estimate once from reference
-    detector = make_detector(DETECTOR)
+    gamma        = _estimate_gamma(ref_np)  # estimate once from reference
+    detector     = make_detector(DETECTOR)
+    jsd_detector = make_detector(DETECTOR)
+    jsd_warn_positions  = []
+    jsd_drift_positions = []
     print(f"  Drift detector: {DETECTOR.upper()}")
 
     for i in range(n_windows):
@@ -663,6 +694,17 @@ for enc in ENCODERS:
                   f"— window {i+1} (pos {pos:,})  mmd={score:.4f}")
             plot_drift_scatter(ref_np, win_np, pos, i + 1, enc["name"], score)
 
+        # ── Feed JSD score to separate ADWIN detector (monitoring only) ────────
+        jsd_detector.update(js)
+        if jsd_detector.warning_detected:
+            print(f"  [JSD-WARN]  {DETECTOR.upper()} warning on JSD "
+                  f"— window {i+1} (pos {pos:,})  jsd={js:.4f}")
+            jsd_warn_positions.append(pos)
+        if jsd_detector.drift_detected:
+            print(f"  [JSD-DRIFT] {DETECTOR.upper()} drift on JSD   "
+                  f"— window {i+1} (pos {pos:,})  jsd={js:.4f}")
+            jsd_drift_positions.append(pos)
+
         # ── Detect-then-adapt: retrain LoRA on confirmed drift ─────────────────
         if detector.drift_detected:
             print(f"  [ADAPT] Retraining LoRA …")
@@ -675,8 +717,9 @@ for enc in ENCODERS:
             ref_acc     = (new_preds_orig == y_win).mean()
             gamma  = _estimate_gamma(ref_np)
             detector.reset()
+            jsd_detector.reset()
             adapt_positions.append(pos)
-            print(f"  [ADAPT] Done — new reference set, gamma and detector reset.")
+            print(f"  [ADAPT] Done — new reference set, gamma and detectors reset.")
 
         window_accuracies.append(acc)
         window_entropies.append(entropy)
@@ -691,7 +734,7 @@ for enc in ENCODERS:
     plot_results(
         window_positions, window_accuracies, window_entropies,
         mmd_scores, kl_scores, js_scores, centroid_scores,
-        adapt_positions,
+        adapt_positions, jsd_warn_positions, jsd_drift_positions,
         ref_acc, ref_entropy,
         enc["name"], enc["out_path"],
     )
