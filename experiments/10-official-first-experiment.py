@@ -467,13 +467,15 @@ def plot_drift_scatter(
     mmd_score: float,
 ):
     """
-    2-D PCA scatter of reference vs drifted window embeddings.
+    2-D t-SNE scatter of reference vs drifted window embeddings.
     Saved to disk as drift_scatter_{encoder_name}_w{window_idx}.png
     """
+    from sklearn.manifold import TSNE
+
     combined = np.vstack([ref_np, win_np])
-    pca      = PCA(n_components=2)
-    coords   = pca.fit_transform(combined)
-    var      = pca.explained_variance_ratio_
+    tsne     = TSNE(n_components=2, perplexity=min(30, len(combined) // 4),
+                    random_state=42, n_jobs=-1)
+    coords   = tsne.fit_transform(combined)
 
     ref_c = coords[:len(ref_np)]
     win_c = coords[len(ref_np):]
@@ -489,8 +491,8 @@ def plot_drift_scatter(
         f"stream pos {pos:,}  |  MMD={mmd_score:.4f}",
         fontsize=11,
     )
-    ax.set_xlabel(f"PC1 ({var[0]:.1%} var)", fontsize=10)
-    ax.set_ylabel(f"PC2 ({var[1]:.1%} var)", fontsize=10)
+    ax.set_xlabel("t-SNE dim 1", fontsize=10)
+    ax.set_ylabel("t-SNE dim 2", fontsize=10)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
 
