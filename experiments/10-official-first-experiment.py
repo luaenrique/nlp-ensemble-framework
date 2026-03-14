@@ -22,6 +22,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from scipy.spatial.distance import pdist
+from scipy.spatial import ConvexHull
 from sklearn.decomposition import PCA
 from abc import ABC, abstractmethod
 
@@ -53,6 +54,10 @@ TRAIN_BATCH  = 16
 
 MMD_THRESHOLD = 0.2   # binarisation threshold for RDDM; also plotted as reference line
 DETECTOR      = "adwin"  # "adwin" | "ddm"
+
+ADAPT_SELECT_METHOD = "convex_hull"  # "convex_hull" | "centroid_distance"
+ADAPT_KEEP_RATIO    = 0.5            # fraction of window samples to use for retraining
+ADAPT_MIN_SAMPLES   = 8              # hard floor — never retrain on fewer than this
 
 # ── Encoder configs ────────────────────────────────────────────────────────────
 ENCODERS = [
@@ -465,26 +470,32 @@ def plot_drift_scatter(
     window_idx: int,
     encoder_name: str,
     mmd_score: float,
+    tsne_coords: np.ndarray,
+    selected_indices: np.ndarray | None = None,
 ):
     """
     2-D t-SNE scatter of reference vs drifted window embeddings.
+    tsne_coords: pre-computed t-SNE projection of np.vstack([ref_np, win_np])
+    selected_indices: if provided, hull points are shown as stars; rest faded.
     Saved to disk as drift_scatter_{encoder_name}_w{window_idx}.png
     """
-    from sklearn.manifold import TSNE
-
-    combined = np.vstack([ref_np, win_np])
-    tsne     = TSNE(n_components=2, perplexity=min(30, len(combined) // 4),
-                    random_state=42, n_jobs=-1)
-    coords   = tsne.fit_transform(combined)
-
-    ref_c = coords[:len(ref_np)]
-    win_c = coords[len(ref_np):]
+    ref_c = tsne_coords[:len(ref_np)]
+    win_c = tsne_coords[len(ref_np):]
 
     fig, ax = plt.subplots(figsize=(7, 6))
     ax.scatter(ref_c[:, 0], ref_c[:, 1], s=18, alpha=0.6,
                color="steelblue", label=f"Reference  (n={len(ref_np)})")
-    ax.scatter(win_c[:, 0], win_c[:, 1], s=18, alpha=0.6,
-               color="tomato",    label=f"Drift window (n={len(win_np)})")
+
+    if selected_indices is not None:
+        sel_mask = np.zeros(len(win_np), dtype=bool)
+        sel_mask[selected_indices] = True
+        ax.scatter(win_c[~sel_mask, 0], win_c[~sel_mask, 1], s=14, alpha=0.25,
+                   color="tomato", label=f"Drift — excluded (n={int((~sel_mask).sum())})")
+        ax.scatter(win_c[sel_mask, 0], win_c[sel_mask, 1], s=60, alpha=0.9,
+                   color="tomato", marker="*", label=f"Drift — selected hull (n={int(sel_mask.sum())})")
+    else:
+        ax.scatter(win_c[:, 0], win_c[:, 1], s=18, alpha=0.6,
+                   color="tomato", label=f"Drift window (n={len(win_np)})")
 
     ax.set_title(
         f"Drift detected — {encoder_name}\n"
@@ -501,6 +512,72 @@ def plot_drift_scatter(
     plt.savefig(out, dpi=130, bbox_inches="tight")
     plt.show()
     print(f"  [SCATTER] Saved → {out}")
+
+
+def select_drift_samples(
+    ref_np: np.ndarray,
+    win_np: np.ndarray,
+    X_win: np.ndarray,
+    y_win: np.ndarray,
+    win_2d: np.ndarray,
+    method: str = "convex_hull",
+    keep_ratio: float = 0.5,
+    min_samples: int = 8,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Select the most extreme samples from the drifted window for LoRA retraining.
+
+    win_2d: t-SNE coords of win_np only, shape (WINDOW_SIZE, 2). Used by
+            convex_hull to find boundary points in the same 2D space shown in
+            the scatter plot — hull points are exactly what the user sees on
+            the boundary.
+
+    Strategy:
+      - convex_hull : vertices of the convex hull in t-SNE space are the most
+                      extreme boundary points. If hull gives fewer than n_keep,
+                      expand with interior points ranked by 768-d distance from
+                      the reference centroid.
+      - centroid_distance : rank all win_np points by Euclidean distance from
+                            the reference centroid in 768-d, keep the top n_keep.
+
+    Returns:
+        X_sel, y_sel, selected_indices
+    """
+    n_win  = len(win_np)
+    n_keep = max(min_samples, int(keep_ratio * n_win))
+    n_keep = min(n_keep, n_win)
+
+    ref_centroid = ref_np.mean(axis=0)
+
+    if method == "convex_hull":
+        try:
+            hull     = ConvexHull(win_2d)
+            hull_idx = set(hull.vertices.tolist())
+        except Exception:
+            print("  [ADAPT-WARN] ConvexHull failed (degenerate projection) — falling back to centroid_distance")
+            method = "centroid_distance"
+
+    if method == "convex_hull":
+        non_hull = [i for i in range(n_win) if i not in hull_idx]
+        if len(hull_idx) >= n_keep:
+            # more hull vertices than needed: keep the n_keep furthest from ref centroid
+            hull_list  = list(hull_idx)
+            hull_dists = np.linalg.norm(win_np[hull_list] - ref_centroid, axis=1)
+            order      = np.argsort(hull_dists)[::-1]
+            selected   = np.array(hull_list)[order[:n_keep]]
+        else:
+            # expand: fill remainder with non-hull points ranked by 768-d centroid distance
+            extra_needed = n_keep - len(hull_idx)
+            non_hull_dists = np.linalg.norm(win_np[non_hull] - ref_centroid, axis=1)
+            extra    = np.array(non_hull)[np.argsort(non_hull_dists)[-extra_needed:]]
+            selected = np.array(list(hull_idx) + extra.tolist())
+
+    if method == "centroid_distance":
+        dists    = np.linalg.norm(win_np - ref_centroid, axis=1)
+        selected = np.argsort(dists)[-n_keep:]
+
+    selected_indices = np.sort(selected).astype(int)
+    return X_win[selected_indices], y_win[selected_indices], selected_indices
 
 
 def plot_results(
@@ -694,7 +771,6 @@ for enc in ENCODERS:
         if detector.drift_detected:
             print(f"  [DRIFT]   {DETECTOR.upper()} confirmed concept drift          "
                   f"— window {i+1} (pos {pos:,})  mmd={score:.4f}")
-            plot_drift_scatter(ref_np, win_np, pos, i + 1, enc["name"], score)
 
         # ── Feed JSD score to separate ADWIN detector (monitoring only) ────────
         jsd_detector.update(js)
@@ -709,8 +785,29 @@ for enc in ENCODERS:
 
         # ── Detect-then-adapt: retrain LoRA on confirmed drift ─────────────────
         if detector.drift_detected:
-            print(f"  [ADAPT] Retraining LoRA …")
-            train_model(model, tokenizer, X_win, y_win, label="adapt")
+            from sklearn.manifold import TSNE
+
+            # compute t-SNE once — reused by both sample selection and scatter plot
+            combined    = np.vstack([ref_np, win_np])
+            tsne_coords = TSNE(n_components=2, perplexity=min(30, len(combined) // 4),
+                               random_state=42, n_jobs=-1).fit_transform(combined)
+            win_2d = tsne_coords[len(ref_np):]
+
+            # select most extreme samples via convex hull in t-SNE space
+            X_sel, y_sel, sel_idx = select_drift_samples(
+                ref_np, win_np, X_win, y_win, win_2d,
+                method=ADAPT_SELECT_METHOD,
+                keep_ratio=ADAPT_KEEP_RATIO,
+                min_samples=ADAPT_MIN_SAMPLES,
+            )
+            print(f"  [ADAPT] Selected {len(X_sel)}/{len(X_win)} samples "
+                  f"({ADAPT_SELECT_METHOD})  label dist: {dict(zip(*np.unique(y_sel, return_counts=True)))}")
+
+            plot_drift_scatter(ref_np, win_np, pos, i + 1, enc["name"], score,
+                               tsne_coords=tsne_coords, selected_indices=sel_idx)
+
+            print(f"  [ADAPT] Retraining LoRA on {len(X_sel)} selected samples …")
+            train_model(model, tokenizer, X_sel, y_sel, label="adapt")
             # Re-encode with updated model to get new reference distribution
             new_ref_t, new_ref_preds, new_ref_entropies = encode_and_predict(X_win, model, tokenizer)
             ref_np      = new_ref_t.cpu().numpy()
