@@ -471,7 +471,7 @@ for base, subset in DATASETS:
     stream_labels = all_labels[BURNIN_SIZE:]
     n_windows     = len(stream_texts) // WINDOW_SIZE
 
-    label_map     = {v: i for i, v in enumerate(np.unique(burnin_labels))}
+    label_map     = {v: i for i, v in enumerate(np.unique(all_labels))}
     inv_label_map = {i: v for v, i in label_map.items()}
     num_labels    = len(label_map)
 
