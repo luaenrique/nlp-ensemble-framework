@@ -93,7 +93,6 @@ SWEEP_METRICS      = ["mmd", "jsd"]
 
 DATASETS = [
     ("airbnb", 1), ("airbnb", 2), ("airbnb", 3), ("airbnb", 4), ("airbnb", 5),
-    ("yelp",   1), ("yelp",   3), ("yelp",   4), ("yelp",   5),
 ]
 
 ENCODERS = [
