@@ -456,8 +456,13 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
                 y_train = np.concatenate([np.array(warn_buffer_y), y_sel])
             else:
                 X_train, y_train = X_sel, y_sel
+
+            w_before = {n: p.data.clone() for n, p in model.named_parameters() if p.requires_grad}
             train_model(model, tokenizer, X_train, y_train, label_map,
                         label="adapt", epochs=ADAPT_EPOCHS)
+            changed = sum(1 for n, p in model.named_parameters()
+                          if p.requires_grad and not torch.equal(w_before[n], p.data))
+            print(f"  [LORA CHECK] {changed}/{len(w_before)} params changed after adaptation")
 
             new_ref_t, _ = encode_and_predict(X_win, model, tokenizer)
             ref_np = new_ref_t.cpu().numpy()
