@@ -63,7 +63,7 @@ BURNIN_SIZE     = 500
 N_DRIFTED       = 150_000
 DRIFT_POSITIONS = [50_000, 100_000, 150_000]
 
-WINDOW_SIZE         = 100
+WINDOW_SIZE         = 16
 ACC_PLOT_WINDOW     = WINDOW_SIZE * 4   # rolling window for prequential accuracy
 
 TRAIN_EPOCHS = 3
