@@ -243,7 +243,8 @@ def select_drift_samples_per_class(ref_np, win_np, X_win, y_win, win_2d) -> tupl
         cls_2d   = win_2d[cls_mask]
         cls_np   = win_np[cls_mask]
 
-        n_keep_cls = max(ADAPT_MIN_SAMPLES // len(classes), 4)
+        n_keep_cls = max(int(ADAPT_KEEP_RATIO * len(cls_mask)),
+                         ADAPT_MIN_SAMPLES // max(len(classes), 1))
         n_keep_cls = min(n_keep_cls, len(cls_mask))
 
         if len(cls_mask) < 4:
@@ -449,7 +450,13 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
             X_sel, y_sel, _ = select_drift_samples_per_class(
                 ref_np, win_np, X_win, y_win, tsne_coords
             )
-            train_model(model, tokenizer, X_sel, y_sel, label_map,
+            # combine hull-selected samples with warning buffer for training
+            if warn_buffer_X:
+                X_train = np.concatenate([np.array(warn_buffer_X), X_sel])
+                y_train = np.concatenate([np.array(warn_buffer_y), y_sel])
+            else:
+                X_train, y_train = X_sel, y_sel
+            train_model(model, tokenizer, X_train, y_train, label_map,
                         label="adapt", epochs=ADAPT_EPOCHS)
 
             new_ref_t, _ = encode_and_predict(X_win, model, tokenizer)
