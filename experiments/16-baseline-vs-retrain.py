@@ -521,6 +521,7 @@ for base, subset in DATASETS:
         # build and train on burnin once
         model, tokenizer = build_model(enc, num_labels)
         model.print_trainable_parameters()
+        print(f"  [LORA TARGETS] {_detect_lora_targets(model.base_model.model)}")
         train_model(model, tokenizer, burnin_texts, burnin_labels,
                     label_map, label="burnin")
         initial_state = copy.deepcopy(model.state_dict())
