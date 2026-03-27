@@ -66,8 +66,9 @@ DRIFT_POSITIONS = [50_000, 100_000, 150_000]
 WINDOW_SIZE         = 16
 ACC_PLOT_WINDOW     = WINDOW_SIZE * 4   # rolling window for prequential accuracy
 
-BURNIN_EPOCHS = 3
-TRAIN_BATCH   = 16
+BURNIN_EPOCHS    = 3
+TRAIN_BATCH      = 16
+PLOT_BUCKET_SIZE = 1000   # average accuracy/metrics over this many stream positions
 
 # ── Dataset list ───────────────────────────────────────────────────────────────
 DATASETS = [
@@ -262,6 +263,21 @@ def train_model(model, tokenizer, texts, labels, label_map,
     print(f"  [{label.upper()}] {len(texts):,} samples × {epochs} epochs done")
 
 
+# ── Plot helpers ──────────────────────────────────────────────────────────────
+
+def _bucket(positions, values, bucket_size=PLOT_BUCKET_SIZE):
+    """Average values into fixed-size position buckets for smoother plots."""
+    buckets: dict[int, list] = {}
+    for pos, val in zip(positions, values):
+        key = (pos // bucket_size) * bucket_size
+        buckets.setdefault(key, []).append(val)
+    keys = sorted(buckets)
+    return (
+        [k + bucket_size // 2 for k in keys],
+        [float(np.mean(buckets[k])) for k in keys],
+    )
+
+
 # ── Plot ───────────────────────────────────────────────────────────────────────
 
 def save_results_plot(
@@ -269,6 +285,11 @@ def save_results_plot(
     mmd_scores, jsd_scores,
     ref_acc, run_tag, base, subset, encoder_name,
 ):
+    # smooth all series to 1k-sample buckets before plotting
+    pos_b, acc_b = _bucket(window_positions, window_accuracies)
+    _,     mmd_b = _bucket(window_positions, mmd_scores)
+    _,     jsd_b = _bucket(window_positions, jsd_scores)
+
     drift_colors = ["#e74c3c", "#e67e22", "#9b59b6"]
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
     fig.suptitle(
@@ -277,9 +298,9 @@ def save_results_plot(
         fontsize=12,
     )
 
-    def _fill(ax, ys, color, label, ref=None, ref_label=None, ylabel=""):
-        ax.plot(window_positions, ys, color=color, linewidth=1.2, label=label)
-        ax.fill_between(window_positions, ys, alpha=0.12, color=color)
+    def _fill(ax, xs, ys, color, label, ref=None, ref_label=None, ylabel=""):
+        ax.plot(xs, ys, color=color, linewidth=1.2, label=label)
+        ax.fill_between(xs, ys, alpha=0.12, color=color)
         if ref is not None:
             ax.axhline(ref, color=color, linestyle=":", linewidth=1, alpha=0.7,
                        label=ref_label)
@@ -287,13 +308,13 @@ def save_results_plot(
         ax.legend(loc="upper left", fontsize=8)
         ax.grid(alpha=0.25)
 
-    _fill(axes[0], window_accuracies, "steelblue",
-          f"Prequential acc (rolling {ACC_PLOT_WINDOW})",
+    _fill(axes[0], pos_b, acc_b, "steelblue",
+          f"Accuracy (avg per {PLOT_BUCKET_SIZE} samples)",
           ref=ref_acc, ref_label=f"Ref acc ({ref_acc:.3f})", ylabel="Accuracy")
     axes[0].set_ylim(0, 1.05)
 
-    _fill(axes[1], mmd_scores, "darkorange", "MMD", ylabel="MMD")
-    _fill(axes[2], jsd_scores, "teal",       "JSD",
+    _fill(axes[1], pos_b, mmd_b, "darkorange", "MMD", ylabel="MMD")
+    _fill(axes[2], pos_b, jsd_b, "teal",       "JSD",
           ref=np.log(2), ref_label=f"Max JSD ({np.log(2):.3f})", ylabel="JSD (nats)")
 
     axes[2].set_xlabel("Position in stream", fontsize=10)
