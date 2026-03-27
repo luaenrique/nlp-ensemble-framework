@@ -66,8 +66,8 @@ DRIFT_POSITIONS = [50_000, 100_000, 150_000]
 WINDOW_SIZE         = 16
 ACC_PLOT_WINDOW     = WINDOW_SIZE * 4   # rolling window for prequential accuracy
 
-TRAIN_EPOCHS = 3
-TRAIN_BATCH  = 16
+BURNIN_EPOCHS = 3
+TRAIN_BATCH   = 16
 
 # ── Dataset list ───────────────────────────────────────────────────────────────
 DATASETS = [
@@ -245,10 +245,11 @@ def encode_and_predict(texts, model, tokenizer, batch_size=64):
     )
 
 
-def train_model(model, tokenizer, texts, labels, label_map, label: str = "train"):
+def train_model(model, tokenizer, texts, labels, label_map,
+                label: str = "train", epochs: int = BURNIN_EPOCHS):
     optimizer = AdamW(model.parameters(), lr=2e-4)
     model.train()
-    for epoch in range(TRAIN_EPOCHS):
+    for epoch in range(epochs):
         for i in range(0, len(texts), TRAIN_BATCH):
             bt = texts[i : i + TRAIN_BATCH].tolist()
             bl = torch.tensor([label_map[l] for l in labels[i : i + TRAIN_BATCH]]).to(device)
@@ -258,7 +259,7 @@ def train_model(model, tokenizer, texts, labels, label_map, label: str = "train"
             model(**inputs, labels=bl).loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-    print(f"  [{label.upper()}] {len(texts):,} samples × {TRAIN_EPOCHS} epochs done")
+    print(f"  [{label.upper()}] {len(texts):,} samples × {epochs} epochs done")
 
 
 # ── Plot ───────────────────────────────────────────────────────────────────────

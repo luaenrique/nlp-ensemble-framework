@@ -79,8 +79,9 @@ DRIFT_POSITIONS = [50_000, 100_000, 150_000]
 
 ACC_PLOT_WINDOW_FACTOR = 4
 
-TRAIN_EPOCHS = 3
-TRAIN_BATCH  = 16
+BURNIN_EPOCHS = 3
+ADAPT_EPOCHS  = 1
+TRAIN_BATCH   = 16
 
 MMD_THRESHOLD = 0.20
 JSD_THRESHOLD = 0.10
@@ -376,10 +377,11 @@ def encode_and_predict(texts, model, tokenizer, batch_size=64):
     )
 
 
-def train_model(model, tokenizer, texts, labels, label_map, label: str = "train"):
+def train_model(model, tokenizer, texts, labels, label_map,
+                label: str = "train", epochs: int = BURNIN_EPOCHS):
     optimizer = AdamW(model.parameters(), lr=2e-4)
     model.train()
-    for epoch in range(TRAIN_EPOCHS):
+    for epoch in range(epochs):
         for i in range(0, len(texts), TRAIN_BATCH):
             bt = texts[i : i + TRAIN_BATCH].tolist()
             bl = torch.tensor([label_map[l] for l in labels[i : i + TRAIN_BATCH]]).to(device)
@@ -389,7 +391,7 @@ def train_model(model, tokenizer, texts, labels, label_map, label: str = "train"
             model(**inputs, labels=bl).loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-    print(f"  [{label.upper()}] {len(texts):,} samples × {TRAIN_EPOCHS} epochs done")
+    print(f"  [{label.upper()}] {len(texts):,} samples × {epochs} epochs done")
 
 
 # ── Sample selection strategies ────────────────────────────────────────────────
@@ -661,7 +663,7 @@ def run_experiment(
                     ref_np, win_np, X_win, y_win, tsne_coords
                 )
 
-            train_model(model, tokenizer, X_sel, y_sel, label_map, label="adapt")
+            train_model(model, tokenizer, X_sel, y_sel, label_map, label="adapt", epochs=ADAPT_EPOCHS)
             n_adapts += 1
 
             new_ref_t, new_ref_preds, new_ref_ent = encode_and_predict(
