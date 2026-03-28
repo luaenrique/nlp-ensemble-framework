@@ -553,7 +553,7 @@ for dataset_file in DATASETS:
             pos_base, acc_base,
             pos_ret,  acc_ret,
             adapt_pos,
-            run_tag, base, subset, enc["name"],
+            run_tag, dataset_name, "", enc["name"],
         )
 
         post_drift_base = [acc_base[j] for j, p in enumerate(pos_base)
@@ -563,9 +563,9 @@ for dataset_file in DATASETS:
 
         _append_summary({
             "run_tag":                    run_tag,
-            "dataset":                    f"{base}-{subset}-{DRIFT_TYPE}",
-            "base":                       base,
-            "subset":                     subset,
+            "dataset":                    dataset_name,
+            "base":                       dataset_name,
+            "subset":                     "",
             "encoder":                    enc["name"],
             "mean_acc_baseline":          round(float(np.mean(acc_base)), 4),
             "mean_acc_retrain":           round(float(np.mean(acc_ret)),  4),
