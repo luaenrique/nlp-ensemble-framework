@@ -62,22 +62,23 @@ for d in [RESULTS_DIR, PLOTS_DIR]:
 # ── Hyperparams ────────────────────────────────────────────────────────────────
 DATASET_DIR = "datasets"
 
-BURNIN_SIZE     = 500
+BURNIN_SIZE     = 1_000
 N_DRIFTED       = 22_000        # total samples to use from tech dataset
 DRIFT_POSITIONS = [11_600]      # approximate 2009→2026 boundary in stream
 TEXT_COL        = "text"
+SORT_BY_DATE    = True          # sort dataset by created_at before streaming
 
-WINDOW_SIZE      = 100
+WINDOW_SIZE      = 200
 BURNIN_EPOCHS    = 3
 ADAPT_EPOCHS     = 1
 TRAIN_BATCH      = 16
 PLOT_BUCKET_SIZE = 1_000
 
-# fixed retrain config
-DETECTOR_NAME    = "adwin"
+# fixed retrain config — threshold-based detection (simpler, works with short streams)
+DETECTOR_NAME    = "threshold"
 METRIC_NAME      = "mmd"
 SELECTION_METHOD = "convex_hull_per_class"
-MMD_THRESHOLD    = 0.20
+MMD_THRESHOLD    = 0.02
 WARNING_BUFFER_MAX = 500
 ADAPT_KEEP_RATIO   = 0.5
 ADAPT_MIN_SAMPLES  = 8
@@ -415,10 +416,8 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
     warn_buffer_X   = []
     warn_buffer_y   = []
 
-    # reference embeddings from the first window
-    ref_embs_t, _ = encode_and_predict(
-        stream_texts[:WINDOW_SIZE], model, tokenizer
-    )
+    # reference embeddings from burnin (same distribution the model was trained on)
+    ref_embs_t, _ = encode_and_predict(burnin_texts, model, tokenizer)
     ref_np = ref_embs_t.cpu().numpy()
     gamma  = _estimate_gamma(ref_np)
     det    = ADWINDetector()
@@ -497,6 +496,8 @@ for dataset_file in DATASETS:
     print(f"{'#'*70}")
 
     com_df = pd.read_csv(com_path).dropna(subset=[TEXT_COL])
+    if SORT_BY_DATE and "created_at" in com_df.columns:
+        com_df = com_df.sort_values("created_at").reset_index(drop=True)
     all_texts  = com_df[TEXT_COL].astype(str).values[:N_DRIFTED]
     all_labels = com_df["label"].values[:N_DRIFTED]
 
