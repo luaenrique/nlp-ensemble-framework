@@ -490,7 +490,7 @@ print(f"  Retrain config: {SELECTION_METHOD}, det={DETECTOR_NAME}, "
 completed = 0
 
 for dataset_file in DATASETS:
-    com_path = f"{dataset_file}"
+    com_path = f"./{dataset_file}"
     dataset_name = dataset_file.replace(".csv", "")
     print(f"\n{'#'*70}")
     print(f"  Dataset: {com_path}")
