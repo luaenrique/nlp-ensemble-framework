@@ -61,11 +61,11 @@ for d in [RESULTS_DIR, PLOTS_DIR]:
 
 # ── Hyperparams ────────────────────────────────────────────────────────────────
 DATASET_DIR = "datasets"
-DRIFT_TYPE  = 1
 
 BURNIN_SIZE     = 500
-N_DRIFTED       = 150_000
-DRIFT_POSITIONS = [50_000, 100_000, 150_000]
+N_DRIFTED       = 22_000        # total samples to use from tech dataset
+DRIFT_POSITIONS = [11_600]      # approximate 2009→2026 boundary in stream
+TEXT_COL        = "text"
 
 WINDOW_SIZE      = 100
 BURNIN_EPOCHS    = 3
@@ -84,7 +84,7 @@ ADAPT_MIN_SAMPLES  = 8
 
 # ── Dataset / encoder lists ────────────────────────────────────────────────────
 DATASETS = [
-    ("airbnb", 1), ("airbnb", 2), ("airbnb", 3), ("airbnb", 4), ("airbnb", 5),
+    "tech_non_tech_dataset.csv",
 ]
 
 ENCODERS = [
@@ -489,14 +489,15 @@ print(f"  Retrain config: {SELECTION_METHOD}, det={DETECTOR_NAME}, "
 
 completed = 0
 
-for base, subset in DATASETS:
-    com_path = f"{DATASET_DIR}/{base}-comdrift-{subset}-{DRIFT_TYPE}-ss.csv"
+for dataset_file in DATASETS:
+    com_path = f"{DATASET_DIR}/{dataset_file}"
+    dataset_name = dataset_file.replace(".csv", "")
     print(f"\n{'#'*70}")
     print(f"  Dataset: {com_path}")
     print(f"{'#'*70}")
 
-    com_df = pd.read_csv(com_path).dropna(subset=["review_treated"])
-    all_texts  = com_df["review_treated"].astype(str).values[:N_DRIFTED]
+    com_df = pd.read_csv(com_path).dropna(subset=[TEXT_COL])
+    all_texts  = com_df[TEXT_COL].astype(str).values[:N_DRIFTED]
     all_labels = com_df["label"].values[:N_DRIFTED]
 
     burnin_texts  = all_texts[:BURNIN_SIZE]
@@ -509,7 +510,7 @@ for base, subset in DATASETS:
     num_labels    = len(label_map)
 
     for enc in ENCODERS:
-        run_tag = f"{base}{subset}_{enc['name'].lower()}_cmp"
+        run_tag = f"{dataset_name}_{enc['name'].lower()}_cmp"
 
         plot_path = os.path.join(PLOTS_DIR, f"{run_tag}.png")
         if os.path.exists(plot_path):
