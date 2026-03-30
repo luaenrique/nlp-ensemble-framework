@@ -475,7 +475,6 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
             new_ref_t, _ = encode_and_predict(X_win, model, tokenizer)
             ref_np = new_ref_t.cpu().numpy()
             gamma  = _estimate_gamma(ref_np)
-            det.reset()
             warn_buffer_X = []
             warn_buffer_y = []
             adapt_positions.append(pos)
