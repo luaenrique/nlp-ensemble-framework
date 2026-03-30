@@ -114,7 +114,7 @@ print(f"Device: {device}")
 
 # ── CSV helpers ────────────────────────────────────────────────────────────────
 SUMMARY_FIELDS = [
-    "run_tag", "dataset", "base", "subset", "encoder",
+    "run_tag", "dataset", "encoder", "detector",
     "mean_acc_baseline", "mean_acc_retrain",
     "mean_acc_post_drift_baseline", "mean_acc_post_drift_retrain",
     "n_adaptations", "wall_time_s",
@@ -280,10 +280,11 @@ def select_drift_samples_per_class(ref_np, win_np, X_win, y_win, win_2d) -> tupl
     return X_win[idx], y_win[idx], idx
 
 
-# ── ADWIN detector ─────────────────────────────────────────────────────────────
+# ── MMD-based drift detectors (all label-free) ─────────────────────────────────
 
 class ADWINDetector:
-    def __init__(self, delta_warning: float = 0.01, delta_drift: float = 0.001):
+    """Two ADWIN instances on the MMD stream — one for warning, one for drift."""
+    def __init__(self, delta_warning: float = 0.1, delta_drift: float = 0.05):
         self._delta_w   = delta_warning
         self._delta_d   = delta_drift
         self._warn_det  = ADWIN(delta=delta_warning)
@@ -299,12 +300,88 @@ class ADWINDetector:
     @property
     def warning_detected(self) -> bool: return self._warning
     @property
-    def drift_detected(self) -> bool:   return self._drift
+    def drift_detected(self)   -> bool: return self._drift
 
     def reset(self) -> None:
         self._warn_det  = ADWIN(delta=self._delta_w)
         self._drift_det = ADWIN(delta=self._delta_d)
         self._warning = self._drift = False
+
+
+class RollingBaselineDetector:
+    """Estimates mean/std of MMD during warmup windows, then flags deviations."""
+    def __init__(self, warmup_windows: int = 20, k_warning: float = 2.0,
+                 k_drift: float = 3.0):
+        self._warmup  = warmup_windows
+        self._k_w     = k_warning
+        self._k_d     = k_drift
+        self._history : list[float] = []
+        self._mean    = 0.0
+        self._std     = 1.0
+        self._ready   = False
+        self._warning = self._drift = False
+
+    def update(self, value: float) -> None:
+        if not self._ready:
+            self._history.append(value)
+            if len(self._history) >= self._warmup:
+                self._mean  = float(np.mean(self._history))
+                self._std   = float(max(np.std(self._history), 1e-6))
+                self._ready = True
+            self._warning = self._drift = False
+            return
+        self._warning = value > self._mean + self._k_w * self._std
+        self._drift   = value > self._mean + self._k_d * self._std
+
+    @property
+    def warning_detected(self) -> bool: return self._warning
+    @property
+    def drift_detected(self)   -> bool: return self._drift
+
+    def reset(self) -> None:
+        self._warning = self._drift = False  # keep baseline stats after reset
+
+
+class PageHinkleyDetector:
+    """Page-Hinkley test — designed for change detection on short streams."""
+    def __init__(self, delta: float = 0.005, lambda_: float = 8.0,
+                 alpha: float = 1.0):
+        self._delta   = delta
+        self._lambda  = lambda_
+        self._alpha   = alpha
+        self._sum     = 0.0
+        self._min_sum = float("inf")
+        self._mean    = 0.0
+        self._n       = 0
+        self._warning = self._drift = False
+
+    def update(self, value: float) -> None:
+        self._n    += 1
+        self._mean += (value - self._mean) / self._n
+        self._sum   = self._sum * self._alpha + (value - self._mean - self._delta)
+        self._min_sum = min(self._min_sum, self._sum)
+        ph = self._sum - self._min_sum
+        self._warning = ph > self._lambda * 0.5
+        self._drift   = ph > self._lambda
+
+    @property
+    def warning_detected(self) -> bool: return self._warning
+    @property
+    def drift_detected(self)   -> bool: return self._drift
+
+    def reset(self) -> None:
+        self._sum     = 0.0
+        self._min_sum = float("inf")
+        self._mean    = 0.0
+        self._n       = 0
+        self._warning = self._drift = False
+
+
+DETECTORS = [
+    ("ADWIN",    lambda: ADWINDetector()),
+    ("Rolling",  lambda: RollingBaselineDetector()),
+    ("PH",       lambda: PageHinkleyDetector()),
+]
 
 
 # ── Plot ───────────────────────────────────────────────────────────────────────
@@ -321,54 +398,52 @@ def _bucket(positions, values):
     )
 
 
+RETRAIN_STYLES = {
+    "ADWIN":   {"color": "darkorange", "linestyle": "-"},
+    "Rolling": {"color": "seagreen",   "linestyle": "-"},
+    "PH":      {"color": "mediumpurple","linestyle": "-"},
+}
+
+
 def save_comparison_plot(
     positions_base, acc_base,
-    positions_ret,  acc_ret,
-    adapt_positions,
-    run_tag, base, subset, encoder_name,
+    retrain_results: dict,   # {det_name: (positions, accuracies, adapt_positions)}
+    run_tag, dataset_name, encoder_name,
 ):
-    pos_b, acc_b_s = _bucket(positions_base, acc_base)
-    pos_r, acc_r_s = _bucket(positions_ret,  acc_ret)
-
     drift_colors = ["#e74c3c", "#e67e22", "#9b59b6"]
     fig, ax = plt.subplots(figsize=(14, 5))
     fig.suptitle(
-        f"{base}-comdrift-{subset}  |  enc={encoder_name}  "
-        f"[Baseline vs Retrain — {SELECTION_METHOD}, {DETECTOR_NAME.upper()}, "
-        f"{METRIC_NAME.upper()}, W={WINDOW_SIZE}]",
+        f"{dataset_name}  |  enc={encoder_name}  "
+        f"[Baseline vs Retrain — {SELECTION_METHOD}, MMD, W={WINDOW_SIZE}]",
         fontsize=11,
     )
 
-    ax.plot(pos_b, acc_b_s, color="steelblue",  linewidth=1.5, label="Baseline (no retrain)")
-    ax.plot(pos_r, acc_r_s, color="darkorange",  linewidth=1.5, label="With LoRA retrain")
-    ax.fill_between(pos_b, acc_b_s, alpha=0.10, color="steelblue")
-    ax.fill_between(pos_r, acc_r_s, alpha=0.10, color="darkorange")
+    pos_b, acc_b_s = _bucket(positions_base, acc_base)
+    ax.plot(pos_b, acc_b_s, color="steelblue", linewidth=1.8,
+            label="Baseline (no retrain)")
+    ax.fill_between(pos_b, acc_b_s, alpha=0.08, color="steelblue")
+
+    for det_name, (pos_r, acc_r, adapt_pos) in retrain_results.items():
+        style = RETRAIN_STYLES.get(det_name, {"color": "gray", "linestyle": "--"})
+        pb, ab = _bucket(pos_r, acc_r)
+        mean_r = float(np.mean(acc_r))
+        ax.plot(pb, ab, linewidth=1.5,
+                label=f"{det_name} (mean={mean_r:.3f})", **style)
+        for ap in adapt_pos:
+            ax.axvline(x=ap, color=style["color"], linestyle=":", linewidth=1.0, alpha=0.6)
+
+    for pos, col in zip(DRIFT_POSITIONS, drift_colors):
+        ax.axvline(x=pos, color=col, linestyle="--", linewidth=1.8, alpha=0.85)
+
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Accuracy", fontsize=10)
     ax.set_xlabel("Position in stream", fontsize=10)
     ax.grid(alpha=0.25)
+    ax.legend(loc="lower left", fontsize=9)
 
-    legend_patches = []
-    for pos, col in zip(DRIFT_POSITIONS, drift_colors):
-        ax.axvline(x=pos, color=col, linestyle="--", linewidth=1.8, alpha=0.85)
-        legend_patches.append(mpatches.Patch(color=col, label=f"Drift @ {pos//1_000}k"))
-    for pos in adapt_positions:
-        ax.axvline(x=pos, color="limegreen", linestyle=":", linewidth=1.2, alpha=0.8)
-    if adapt_positions:
-        legend_patches.append(mpatches.Patch(color="limegreen", label="LoRA adapted"))
-
-    ax.legend(
-        handles=[
-            plt.Line2D([0], [0], color="steelblue",  linewidth=2, label="Baseline"),
-            plt.Line2D([0], [0], color="darkorange",  linewidth=2, label="With retrain"),
-            *legend_patches,
-        ],
-        loc="lower left", fontsize=9,
-    )
-
-    x_ticks = np.arange(0, N_DRIFTED + 1, 25_000)
+    x_ticks = np.arange(0, N_DRIFTED + 1, 2_000)
     ax.set_xticks(x_ticks)
-    ax.set_xticklabels([f"{x//1_000}k" for x in x_ticks])
+    ax.set_xticklabels([f"{x//1_000}k" for x in x_ticks], fontsize=7)
     ax.set_xlim(0, N_DRIFTED)
 
     plt.tight_layout()
@@ -405,8 +480,8 @@ def pass_baseline(model, tokenizer, inv_label_map, stream_texts, stream_labels):
 
 
 def pass_retrain(model, tokenizer, label_map, inv_label_map,
-                 stream_texts, stream_labels):
-    """One pass with ADWIN + MMD drift detection and LoRA adaptation.
+                 stream_texts, stream_labels, detector, det_name: str = ""):
+    """One pass with MMD-based drift detection and LoRA adaptation.
     Returns (positions, accuracies, adapt_positions)."""
     n_windows       = len(stream_texts) // WINDOW_SIZE
     correct_history = []
@@ -420,7 +495,7 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
     ref_embs_t, _ = encode_and_predict(burnin_texts, model, tokenizer)
     ref_np = ref_embs_t.cpu().numpy()
     gamma  = _estimate_gamma(ref_np)
-    det    = ADWINDetector(delta_warning=0.05, delta_drift=0.01)
+    det    = detector
 
     for i in range(n_windows):
         start = i * WINDOW_SIZE
@@ -445,7 +520,7 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
             print(f"  [WARN]  w{i+1} pos={pos:,}  MMD={mmd:.4f}  buf={len(warn_buffer_X)}")
 
         if det.drift_detected:
-            print(f"  [DRIFT] w{i+1} pos={pos:,}  MMD={mmd:.4f}  buf={len(warn_buffer_X)}")
+            print(f"  [DRIFT/{det_name}] w{i+1} pos={pos:,}  MMD={mmd:.4f}  buf={len(warn_buffer_X)}")
             tsne_coords = _tsne_2d(win_np)
             X_sel, y_sel, _ = select_drift_samples_per_class(
                 ref_np, win_np, X_win, y_win, tsne_coords
@@ -549,42 +624,41 @@ for dataset_file in DATASETS:
         pos_base, acc_base = pass_baseline(
             model, tokenizer, inv_label_map, stream_texts, stream_labels
         )
+        post_drift_base = [a for p, a in zip(pos_base, acc_base)
+                           if p >= DRIFT_POSITIONS[0]]
 
-        # ── retrain pass ───────────────────────────────────────────────────
-        print(f"\n  [RETRAIN] pass...")
-        model.load_state_dict(copy.deepcopy(initial_state))
-        pos_ret, acc_ret, adapt_pos = pass_retrain(
-            model, tokenizer, label_map, inv_label_map,
-            stream_texts, stream_labels
-        )
+        # ── retrain passes (one per detector) ──────────────────────────────
+        retrain_results = {}
+        for det_name, det_factory in DETECTORS:
+            print(f"\n  [RETRAIN/{det_name}] pass...")
+            model.load_state_dict(copy.deepcopy(initial_state))
+            pos_r, acc_r, adapt_pos = pass_retrain(
+                model, tokenizer, label_map, inv_label_map,
+                stream_texts, stream_labels,
+                detector=det_factory(), det_name=det_name,
+            )
+            retrain_results[det_name] = (pos_r, acc_r, adapt_pos)
 
-        wall_time = time.perf_counter() - t_start
+            post_drift_ret = [a for p, a in zip(pos_r, acc_r)
+                              if p >= DRIFT_POSITIONS[0]]
+            _append_summary({
+                "run_tag":   f"{run_tag}_{det_name.lower()}",
+                "dataset":   dataset_name,
+                "encoder":   enc["name"],
+                "detector":  det_name,
+                "mean_acc_baseline":            round(float(np.mean(acc_base)), 4),
+                "mean_acc_retrain":             round(float(np.mean(acc_r)),    4),
+                "mean_acc_post_drift_baseline": round(float(np.mean(post_drift_base)), 4) if post_drift_base else "n/a",
+                "mean_acc_post_drift_retrain":  round(float(np.mean(post_drift_ret)),  4) if post_drift_ret  else "n/a",
+                "n_adaptations": len(adapt_pos),
+                "wall_time_s":   round(time.perf_counter() - t_start, 1),
+            })
 
         save_comparison_plot(
             pos_base, acc_base,
-            pos_ret,  acc_ret,
-            adapt_pos,
-            run_tag, dataset_name, "", enc["name"],
+            retrain_results,
+            run_tag, dataset_name, enc["name"],
         )
-
-        post_drift_base = [acc_base[j] for j, p in enumerate(pos_base)
-                           if p >= DRIFT_POSITIONS[0]]
-        post_drift_ret  = [acc_ret[j]  for j, p in enumerate(pos_ret)
-                           if p >= DRIFT_POSITIONS[0]]
-
-        _append_summary({
-            "run_tag":                    run_tag,
-            "dataset":                    dataset_name,
-            "base":                       dataset_name,
-            "subset":                     "",
-            "encoder":                    enc["name"],
-            "mean_acc_baseline":          round(float(np.mean(acc_base)), 4),
-            "mean_acc_retrain":           round(float(np.mean(acc_ret)),  4),
-            "mean_acc_post_drift_baseline": round(float(np.mean(post_drift_base)), 4) if post_drift_base else "n/a",
-            "mean_acc_post_drift_retrain":  round(float(np.mean(post_drift_ret)),  4) if post_drift_ret  else "n/a",
-            "n_adaptations":              len(adapt_pos),
-            "wall_time_s":                round(wall_time, 1),
-        })
 
         completed += 1
         print(f"  [DONE]  {run_tag}  adaptations={len(adapt_pos)}  "
