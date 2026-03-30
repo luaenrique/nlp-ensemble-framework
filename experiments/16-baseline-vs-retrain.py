@@ -420,7 +420,6 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
     ref_embs_t, _ = encode_and_predict(burnin_texts, model, tokenizer)
     ref_np = ref_embs_t.cpu().numpy()
     gamma  = _estimate_gamma(ref_np)
-    det    = ADWINDetector()
 
     for i in range(n_windows):
         start = i * WINDOW_SIZE
@@ -436,14 +435,15 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
         pos = BURNIN_SIZE + start + WINDOW_SIZE // 2
 
         mmd = compute_mmd(ref_np, win_np, gamma)
-        det.update(mmd)
 
-        if det.warning_detected:
+        # fill warning buffer whenever mmd is elevated (above half threshold)
+        if mmd > MMD_THRESHOLD * 0.5:
             if len(warn_buffer_X) < WARNING_BUFFER_MAX:
                 warn_buffer_X.extend(X_win.tolist())
                 warn_buffer_y.extend(y_win.tolist())
+            print(f"  [WARN]  w{i+1} pos={pos:,}  MMD={mmd:.4f}  buf={len(warn_buffer_X)}")
 
-        if det.drift_detected:
+        if mmd > MMD_THRESHOLD:
             print(f"  [DRIFT] w{i+1} pos={pos:,}  MMD={mmd:.4f}  buf={len(warn_buffer_X)}")
             tsne_coords = _tsne_2d(win_np)
             X_sel, y_sel, _ = select_drift_samples_per_class(
