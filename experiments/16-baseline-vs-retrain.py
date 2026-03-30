@@ -284,7 +284,7 @@ def select_drift_samples_per_class(ref_np, win_np, X_win, y_win, win_2d) -> tupl
 
 class ADWINDetector:
     """Two ADWIN instances on the MMD stream — one for warning, one for drift."""
-    def __init__(self, delta_warning: float = 0.1, delta_drift: float = 0.05):
+    def __init__(self, delta_warning: float = 0.01, delta_drift: float = 0.005):
         self._delta_w   = delta_warning
         self._delta_d   = delta_drift
         self._warn_det  = ADWIN(delta=delta_warning)
