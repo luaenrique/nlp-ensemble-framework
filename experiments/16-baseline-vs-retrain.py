@@ -210,8 +210,8 @@ def encode_and_predict(texts, model, tokenizer, batch_size=64):
 
 
 def train_model(model, tokenizer, texts, labels, label_map,
-                label: str = "train", epochs: int = BURNIN_EPOCHS):
-    optimizer = AdamW(model.parameters(), lr=2e-4)
+                label: str = "train", epochs: int = BURNIN_EPOCHS, lr: float = 2e-4):
+    optimizer = AdamW(model.parameters(), lr=lr)
     model.train()
     for epoch in range(epochs):
         for i in range(0, len(texts), TRAIN_BATCH):
@@ -449,19 +449,28 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
             X_sel, y_sel, _ = select_drift_samples_per_class(
                 ref_np, win_np, X_win, y_win, tsne_coords
             )
-            # combine hull-selected samples with warning buffer for training
+            # combine hull-selected samples with warning buffer
             if warn_buffer_X:
-                X_train = np.concatenate([np.array(warn_buffer_X), X_sel])
-                y_train = np.concatenate([np.array(warn_buffer_y), y_sel])
+                X_new = np.concatenate([np.array(warn_buffer_X), X_sel])
+                y_new = np.concatenate([np.array(warn_buffer_y), y_sel])
             else:
-                X_train, y_train = X_sel, y_sel
+                X_new, y_new = X_sel, y_sel
+
+            # experience replay: mix in 50% burn-in to prevent catastrophic forgetting
+            n_replay   = len(X_new) // 2
+            replay_idx = np.random.choice(len(burnin_texts), n_replay, replace=False)
+            X_train    = np.concatenate([X_new, burnin_texts[replay_idx]])
+            y_train    = np.concatenate([y_new, burnin_labels[replay_idx]])
+            perm       = np.random.permutation(len(X_train))
+            X_train, y_train = X_train[perm], y_train[perm]
 
             w_before = {n: p.data.clone() for n, p in model.named_parameters() if p.requires_grad}
             train_model(model, tokenizer, X_train, y_train, label_map,
-                        label="adapt", epochs=ADAPT_EPOCHS)
+                        label="adapt", epochs=ADAPT_EPOCHS, lr=5e-5)
             changed = sum(1 for n, p in model.named_parameters()
                           if p.requires_grad and not torch.equal(w_before[n], p.data))
-            print(f"  [LORA CHECK] {changed}/{len(w_before)} params changed after adaptation")
+            print(f"  [LORA CHECK] {changed}/{len(w_before)} params changed | "
+                  f"{len(X_new)} drift + {n_replay} replay = {len(X_train)} total")
 
             new_ref_t, _ = encode_and_predict(X_win, model, tokenizer)
             ref_np = new_ref_t.cpu().numpy()
