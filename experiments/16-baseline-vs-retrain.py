@@ -343,23 +343,35 @@ class RollingBaselineDetector:
 
 
 class PageHinkleyDetector:
-    """Page-Hinkley test — designed for change detection on short streams."""
-    def __init__(self, delta: float = 0.005, lambda_: float = 8.0,
-                 alpha: float = 1.0):
+    """Page-Hinkley test with warmup-frozen baseline mean.
+
+    Uses the first `warmup_windows` values to estimate the reference mean,
+    then accumulates deviations above that mean. Because the reference mean
+    is frozen, the statistic keeps growing after drift instead of tracking
+    the new level and resetting to zero.
+    """
+    def __init__(self, warmup_windows: int = 20, delta: float = 0.001,
+                 lambda_: float = 1.0):
+        self._warmup  = warmup_windows
         self._delta   = delta
         self._lambda  = lambda_
-        self._alpha   = alpha
+        self._history : list[float] = []
+        self._mean    = 0.0
+        self._ready   = False
         self._sum     = 0.0
         self._min_sum = float("inf")
-        self._mean    = 0.0
-        self._n       = 0
         self._warning = self._drift = False
 
     def update(self, value: float) -> None:
-        self._n    += 1
-        self._mean += (value - self._mean) / self._n
-        self._sum   = self._sum * self._alpha + (value - self._mean - self._delta)
-        self._min_sum = min(self._min_sum, self._sum)
+        if not self._ready:
+            self._history.append(value)
+            if len(self._history) >= self._warmup:
+                self._mean  = float(np.mean(self._history))
+                self._ready = True
+            self._warning = self._drift = False
+            return
+        self._sum     += (value - self._mean - self._delta)
+        self._min_sum  = min(self._min_sum, self._sum)
         ph = self._sum - self._min_sum
         self._warning = ph > self._lambda * 0.5
         self._drift   = ph > self._lambda
@@ -372,13 +384,11 @@ class PageHinkleyDetector:
     def reset(self) -> None:
         self._sum     = 0.0
         self._min_sum = float("inf")
-        self._mean    = 0.0
-        self._n       = 0
-        self._warning = self._drift = False
+        self._warning = self._drift = False  # keep frozen mean after reset
 
 
 DETECTORS = [
-    ("ADWIN",    lambda: ADWINDetector()),
+    ("ADWIN",    lambda: ADWINDetector(delta_warning=0.3, delta_drift=0.15)),
     ("Rolling",  lambda: RollingBaselineDetector()),
     ("PH",       lambda: PageHinkleyDetector()),
 ]
