@@ -84,8 +84,27 @@ ADAPT_KEEP_RATIO   = 0.5
 ADAPT_MIN_SAMPLES  = 8
 
 # ── Dataset / encoder lists ────────────────────────────────────────────────────
+# Each entry: path, text_col, sort_col (None = already sorted), n_total,
+#             drift_positions, burnin_size
 DATASETS = [
-    "tech_non_tech_dataset.csv",
+    {
+        "name":            "tech_non_tech",
+        "path":            "experiments/tech_non_tech_dataset.csv",
+        "text_col":        "text",
+        "sort_col":        "created_at",
+        "n_total":         22_000,
+        "drift_positions": [11_600],
+        "burnin_size":     1_000,
+    },
+    {
+        "name":            "airbnb-1",
+        "path":            "datasets/airbnb-comdrift-1-1-ss.csv",
+        "text_col":        "review_treated",
+        "sort_col":        None,          # already sorted by stream_position
+        "n_total":         150_000,
+        "drift_positions": [50_000, 100_000, 150_000],
+        "burnin_size":     500,
+    },
 ]
 
 ENCODERS = [
@@ -419,7 +438,10 @@ def save_comparison_plot(
     positions_base, acc_base,
     retrain_results: dict,   # {det_name: (positions, accuracies, adapt_positions)}
     run_tag, dataset_name, encoder_name,
+    drift_positions: list = None,
 ):
+    if drift_positions is None:
+        drift_positions = DRIFT_POSITIONS
     drift_colors = ["#e74c3c", "#e67e22", "#9b59b6"]
     fig, ax = plt.subplots(figsize=(14, 5))
     fig.suptitle(
@@ -442,7 +464,7 @@ def save_comparison_plot(
         for ap in adapt_pos:
             ax.axvline(x=ap, color=style["color"], linestyle=":", linewidth=1.0, alpha=0.6)
 
-    for pos, col in zip(DRIFT_POSITIONS, drift_colors):
+    for pos, col in zip(drift_positions, drift_colors):
         ax.axvline(x=pos, color=col, linestyle="--", linewidth=1.8, alpha=0.85)
 
     ax.set_ylim(0, 1.05)
@@ -465,7 +487,8 @@ def save_comparison_plot(
 
 # ── Stream passes ──────────────────────────────────────────────────────────────
 
-def pass_baseline(model, tokenizer, inv_label_map, stream_texts, stream_labels):
+def pass_baseline(model, tokenizer, inv_label_map, stream_texts, stream_labels,
+                  burnin_size: int = BURNIN_SIZE):
     """One pass with no drift detection or retraining. Returns (positions, accuracies)."""
     n_windows       = len(stream_texts) // WINDOW_SIZE
     correct_history = []
@@ -481,7 +504,7 @@ def pass_baseline(model, tokenizer, inv_label_map, stream_texts, stream_labels):
         preds_orig = np.array([inv_label_map[p] for p in win_preds])
         correct_history.extend((preds_orig == y_win).astype(int).tolist())
         acc = float(np.mean(correct_history[-WINDOW_SIZE * 4:]))
-        pos = BURNIN_SIZE + start + WINDOW_SIZE // 2
+        pos = burnin_size + start + WINDOW_SIZE // 2
 
         positions.append(pos)
         accuracies.append(acc)
@@ -490,7 +513,8 @@ def pass_baseline(model, tokenizer, inv_label_map, stream_texts, stream_labels):
 
 
 def pass_retrain(model, tokenizer, label_map, inv_label_map,
-                 stream_texts, stream_labels, detector, det_name: str = ""):
+                 stream_texts, stream_labels, detector, det_name: str = "",
+                 burnin_size: int = BURNIN_SIZE):
     """One pass with MMD-based drift detection and LoRA adaptation.
     Returns (positions, accuracies, adapt_positions)."""
     n_windows       = len(stream_texts) // WINDOW_SIZE
@@ -518,7 +542,7 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
         preds_orig = np.array([inv_label_map[p] for p in win_preds])
         correct_history.extend((preds_orig == y_win).astype(int).tolist())
         acc = float(np.mean(correct_history[-WINDOW_SIZE * 4:]))
-        pos = BURNIN_SIZE + start + WINDOW_SIZE // 2
+        pos = burnin_size + start + WINDOW_SIZE // 2
 
         mmd = compute_mmd(ref_np, win_np, gamma)
         det.update(mmd)
@@ -583,23 +607,26 @@ print(f"  Retrain config: {SELECTION_METHOD}, det={DETECTOR_NAME}, "
 
 completed = 0
 
-for dataset_file in DATASETS:
-    com_path = f"experiments/{dataset_file}"
-    dataset_name = dataset_file.replace(".csv", "")
+for ds in DATASETS:
+    dataset_name    = ds["name"]
+    text_col        = ds["text_col"]
+    drift_positions = ds["drift_positions"]
+    burnin_size     = ds["burnin_size"]
+
     print(f"\n{'#'*70}")
-    print(f"  Dataset: {com_path}")
+    print(f"  Dataset: {ds['path']}")
     print(f"{'#'*70}")
 
-    com_df = pd.read_csv(com_path).dropna(subset=[TEXT_COL])
-    if SORT_BY_DATE and "created_at" in com_df.columns:
-        com_df = com_df.sort_values("created_at").reset_index(drop=True)
-    all_texts  = com_df[TEXT_COL].astype(str).values[:N_DRIFTED]
-    all_labels = com_df["label"].values[:N_DRIFTED]
+    com_df = pd.read_csv(ds["path"]).dropna(subset=[text_col])
+    if ds["sort_col"] and ds["sort_col"] in com_df.columns:
+        com_df = com_df.sort_values(ds["sort_col"]).reset_index(drop=True)
+    all_texts  = com_df[text_col].astype(str).values[:ds["n_total"]]
+    all_labels = com_df["label"].values[:ds["n_total"]]
 
-    burnin_texts  = all_texts[:BURNIN_SIZE]
-    burnin_labels = all_labels[:BURNIN_SIZE]
-    stream_texts  = all_texts[BURNIN_SIZE:]
-    stream_labels = all_labels[BURNIN_SIZE:]
+    burnin_texts  = all_texts[:burnin_size]
+    burnin_labels = all_labels[:burnin_size]
+    stream_texts  = all_texts[burnin_size:]
+    stream_labels = all_labels[burnin_size:]
 
     label_map     = {v: i for i, v in enumerate(np.unique(all_labels))}
     inv_label_map = {i: v for v, i in label_map.items()}
@@ -632,10 +659,11 @@ for dataset_file in DATASETS:
         print(f"\n  [BASELINE] pass...")
         model.load_state_dict(copy.deepcopy(initial_state))
         pos_base, acc_base = pass_baseline(
-            model, tokenizer, inv_label_map, stream_texts, stream_labels
+            model, tokenizer, inv_label_map, stream_texts, stream_labels,
+            burnin_size=burnin_size,
         )
         post_drift_base = [a for p, a in zip(pos_base, acc_base)
-                           if p >= DRIFT_POSITIONS[0]]
+                           if p >= drift_positions[0]]
 
         # ── retrain passes (one per detector) ──────────────────────────────
         retrain_results = {}
@@ -646,11 +674,12 @@ for dataset_file in DATASETS:
                 model, tokenizer, label_map, inv_label_map,
                 stream_texts, stream_labels,
                 detector=det_factory(), det_name=det_name,
+                burnin_size=burnin_size,
             )
             retrain_results[det_name] = (pos_r, acc_r, adapt_pos)
 
             post_drift_ret = [a for p, a in zip(pos_r, acc_r)
-                              if p >= DRIFT_POSITIONS[0]]
+                              if p >= drift_positions[0]]
             _append_summary({
                 "run_tag":   f"{run_tag}_{det_name.lower()}",
                 "dataset":   dataset_name,
@@ -664,15 +693,16 @@ for dataset_file in DATASETS:
                 "wall_time_s":   round(time.perf_counter() - t_start, 1),
             })
 
+        wall_time = time.perf_counter() - t_start
         save_comparison_plot(
             pos_base, acc_base,
             retrain_results,
             run_tag, dataset_name, enc["name"],
+            drift_positions=drift_positions,
         )
 
         completed += 1
-        print(f"  [DONE]  {run_tag}  adaptations={len(adapt_pos)}  "
-              f"wall_time={round(wall_time,1)}s  ({completed}/{total_runs})")
+        print(f"  [DONE]  {run_tag}  wall_time={round(wall_time,1)}s  ({completed}/{total_runs})")
 
         del model, tokenizer, initial_state
         if device == "cuda":
