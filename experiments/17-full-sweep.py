@@ -674,7 +674,8 @@ def save_plot(positions_base, acc_base,
               retrain_results: dict,
               run_tag: str, dataset_name: str, encoder_name: str,
               sel_method: str, metric_name: str, window_size: int,
-              drift_positions: list, n_total: int) -> None:
+              drift_positions: list, n_total: int,
+              plots_dir: str = RESULTS_DIR) -> None:
     drift_colors = ["#e74c3c", "#e67e22", "#9b59b6"]
     fig, ax = plt.subplots(figsize=(14, 5))
     fig.suptitle(
@@ -713,7 +714,7 @@ def save_plot(positions_base, acc_base,
     ax.set_xlim(0, n_total)
 
     plt.tight_layout()
-    fname = os.path.join(PLOTS_DIR, f"{run_tag}.png")
+    fname = os.path.join(plots_dir, f"{run_tag}.png")
     plt.savefig(fname, dpi=130, bbox_inches="tight")
     plt.close(fig)
     print(f"  [PLOT] → {fname}")
@@ -895,6 +896,7 @@ for ds in DATASETS:
                             enc_tag,
                             sel_method, metric_name, window_size,
                             drift_positions, ds["n_total"],
+                            plots_dir=plots_dir,
                         )
 
         wall_enc = round(time.perf_counter() - t_enc_start, 1)
@@ -908,4 +910,4 @@ for ds in DATASETS:
 print(f"\n{'='*70}")
 print(f"Experiment 17 complete.  {completed} runs.")
 print(f"  Summary → {SUMMARY_CSV}")
-print(f"  Plots   → {PLOTS_DIR}/")
+print(f"  Plots   → {RESULTS_DIR}/{{dataset}}/plots/")
