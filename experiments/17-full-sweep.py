@@ -134,18 +134,18 @@ def _yelp(subset: int, variant: int) -> dict:
     }
 
 DATASETS = (
-    [
-        {
-            "name":            "tech_non_tech",
-            "path":            "experiments/tech_non_tech_dataset.csv",
-            "text_col":        "text",
-            "label_col":       "label",
-            "sort_col":        "created_at",
-            "n_total":         22_000,
-            "drift_positions": [11_600],
-            "burnin_size":     1_000,
-        },
-    ]
+    #[
+    #    {
+    #        "name":            "tech_non_tech",
+    #        "path":            "experiments/tech_non_tech_dataset.csv",
+    #        "text_col":        "text",
+    #        "label_col":       "label",
+    #        "sort_col":        "created_at",
+    #        "n_total":         22_000,
+    #        "drift_positions": [11_600],
+    #        "burnin_size":     1_000,
+    #    },
+    #]
     # airbnb -ss (already ran, kept for completeness)
     + [_airbnb_ss(s) for s in range(1, 6)]
     # airbnb variants 1, 2, 3
