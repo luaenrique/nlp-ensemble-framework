@@ -56,7 +56,7 @@ warnings.filterwarnings("ignore")
 #     {dataset}/
 #       plots/
 #       per_window/
-RESULTS_DIR = "experiment17_results"
+RESULTS_DIR = "experiment17_results_2"
 SUMMARY_CSV = os.path.join(RESULTS_DIR, "summary.csv")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -88,62 +88,71 @@ SWEEP_METRICS           = ["mmd", "jsd"]
 # Detectors are instantiated fresh per run — see DETECTOR_FACTORIES below
 
 # ── Datasets ───────────────────────────────────────────────────────────────────
-DATASETS = [
-    {
-        "name":            "tech_non_tech",
-        "path":            "experiments/tech_non_tech_dataset.csv",
+def _binarize_yelp_stars(star) -> int:
+    """1,2 → 0 (negative)   3,4,5 → 1 (positive)"""
+    return 0 if int(star) <= 2 else 1
+
+
+_YELP_DRIFT_POS   = list(range(50_000, 600_000, 50_000))   # visual markers every 50k
+_AIRBNB_DRIFT_POS = [50_000, 100_000, 150_000]
+
+def _airbnb(subset: int, variant: int) -> dict:
+    return {
+        "name":            f"airbnb-{subset}-{variant}",
+        "path":            f"datasets/airbnb-comdrift-{subset}-{variant}.csv",
+        "text_col":        "review_treated",
+        "label_col":       "label",
+        "sort_col":        None,
+        "n_total":         150_000,
+        "drift_positions": _AIRBNB_DRIFT_POS,
+        "burnin_size":     500,
+    }
+
+def _airbnb_ss(subset: int) -> dict:
+    return {
+        "name":            f"airbnb-{subset}-ss",
+        "path":            f"datasets/airbnb-comdrift-{subset}-1-ss.csv",
+        "text_col":        "review_treated",
+        "label_col":       "label",
+        "sort_col":        None,
+        "n_total":         150_000,
+        "drift_positions": _AIRBNB_DRIFT_POS,
+        "burnin_size":     500,
+    }
+
+def _yelp(subset: int, variant: int) -> dict:
+    return {
+        "name":            f"yelp-{subset}-{variant}",
+        "path":            f"datasets/yelp-comdrift-{subset}-{variant}.csv",
         "text_col":        "text",
-        "sort_col":        "created_at",
-        "n_total":         22_000,
-        "drift_positions": [11_600],
+        "label_col":       "stars",
+        "label_transform": _binarize_yelp_stars,
+        "sort_col":        "year_review",
+        "n_total":         None,   # use all rows
+        "drift_positions": _YELP_DRIFT_POS,
         "burnin_size":     1_000,
-    },
-    {
-        "name":            "airbnb-1",
-        "path":            "datasets/airbnb-comdrift-1-1-ss.csv",
-        "text_col":        "review_treated",
-        "sort_col":        None,
-        "n_total":         150_000,
-        "drift_positions": [50_000, 100_000, 150_000],
-        "burnin_size":     500,
-    },
-    {
-        "name":            "airbnb-2",
-        "path":            "datasets/airbnb-comdrift-2-1-ss.csv",
-        "text_col":        "review_treated",
-        "sort_col":        None,
-        "n_total":         150_000,
-        "drift_positions": [50_000, 100_000, 150_000],
-        "burnin_size":     500,
-    },
-    {
-        "name":            "airbnb-3",
-        "path":            "datasets/airbnb-comdrift-3-1-ss.csv",
-        "text_col":        "review_treated",
-        "sort_col":        None,
-        "n_total":         150_000,
-        "drift_positions": [50_000, 100_000, 150_000],
-        "burnin_size":     500,
-    },
-    {
-        "name":            "airbnb-4",
-        "path":            "datasets/airbnb-comdrift-4-1-ss.csv",
-        "text_col":        "review_treated",
-        "sort_col":        None,
-        "n_total":         150_000,
-        "drift_positions": [50_000, 100_000, 150_000],
-        "burnin_size":     500,
-    },
-    {
-        "name":            "airbnb-5",
-        "path":            "datasets/airbnb-comdrift-5-1-ss.csv",
-        "text_col":        "review_treated",
-        "sort_col":        None,
-        "n_total":         150_000,
-        "drift_positions": [50_000, 100_000, 150_000],
-        "burnin_size":     500,
-    },
-]
+    }
+
+DATASETS = (
+    [
+        {
+            "name":            "tech_non_tech",
+            "path":            "experiments/tech_non_tech_dataset.csv",
+            "text_col":        "text",
+            "label_col":       "label",
+            "sort_col":        "created_at",
+            "n_total":         22_000,
+            "drift_positions": [11_600],
+            "burnin_size":     1_000,
+        },
+    ]
+    # airbnb -ss (already ran, kept for completeness)
+    + [_airbnb_ss(s) for s in range(1, 6)]
+    # airbnb variants 1, 2, 3
+    + [_airbnb(s, v) for s in range(1, 6) for v in range(1, 4)]
+    # yelp variants 1, 2, 3
+    + [_yelp(s, v) for s in range(1, 6) for v in range(1, 4)]
+)
 
 # ── Encoders ───────────────────────────────────────────────────────────────────
 ENCODERS = [
@@ -754,8 +763,11 @@ for ds in DATASETS:
     com_df = pd.read_csv(ds["path"]).dropna(subset=[text_col])
     if ds["sort_col"] and ds["sort_col"] in com_df.columns:
         com_df = com_df.sort_values(ds["sort_col"]).reset_index(drop=True)
-    all_texts  = com_df[text_col].astype(str).values[:ds["n_total"]]
-    all_labels = com_df["label"].values[:ds["n_total"]]
+    n_total    = ds["n_total"]   # None means use all rows
+    all_texts  = com_df[text_col].astype(str).values[:n_total]
+    raw_labels = com_df[ds.get("label_col", "label")].values[:n_total]
+    transform  = ds.get("label_transform", None)
+    all_labels = np.array([transform(l) for l in raw_labels]) if transform else raw_labels
 
     label_map     = {v: i for i, v in enumerate(np.unique(all_labels))}
     inv_label_map = {i: v for v, i in label_map.items()}
@@ -895,7 +907,7 @@ for ds in DATASETS:
                             f"{dataset_name}  {enc_tag}",
                             enc_tag,
                             sel_method, metric_name, window_size,
-                            drift_positions, ds["n_total"],
+                            drift_positions, len(all_texts),
                             plots_dir=plots_dir,
                         )
 
