@@ -147,7 +147,7 @@ DATASETS = (
     #    },
     #]
     # airbnb -ss (already ran, kept for completeness)
-    + [_airbnb_ss(s) for s in range(1, 6)]
+    [_airbnb_ss(s) for s in range(1, 6)]
     # airbnb variants 1, 2, 3
     + [_airbnb(s, v) for s in range(1, 6) for v in range(1, 4)]
     # yelp variants 1, 2, 3
