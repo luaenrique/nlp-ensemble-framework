@@ -128,28 +128,29 @@ def _yelp(subset: int, variant: int) -> dict:
         "label_col":       "stars",
         "label_transform": _binarize_yelp_stars,
         "sort_col":        "year_review",
-        "n_total":         None,   # use all rows
+        "n_total":         None,
         "drift_positions": _YELP_DRIFT_POS,
-        "burnin_size":     1_000,
+        "burnin_size":     500,
+    }
+
+def _yelp_ss(subset: int) -> dict:
+    return {
+        "name":            f"yelp-{subset}-ss",
+        "path":            f"datasets/yelp-comdrift-{subset}-1-ss.csv",
+        "text_col":        "text",
+        "label_col":       "stars",
+        "label_transform": _binarize_yelp_stars,
+        "sort_col":        "year_review",
+        "n_total":         None,
+        "drift_positions": _YELP_DRIFT_POS,
+        "burnin_size":     500,
     }
 
 DATASETS = (
-    #[
-    #    {
-    #        "name":            "tech_non_tech",
-    #        "path":            "experiments/tech_non_tech_dataset.csv",
-    #        "text_col":        "text",
-    #        "label_col":       "label",
-    #        "sort_col":        "created_at",
-    #        "n_total":         22_000,
-    #        "drift_positions": [11_600],
-    #        "burnin_size":     1_000,
-    #    },
-    #]
-    # airbnb -ss (already ran, kept for completeness)
-    [_airbnb_ss(s) for s in range(1, 6)]
     # airbnb variants 1, 2, 3
-    + [_airbnb(s, v) for s in range(1, 6) for v in range(1, 4)]
+    [_airbnb(s, v) for s in range(1, 6) for v in range(1, 4)]
+    # yelp -ss
+    + [_yelp_ss(s) for s in range(1, 6)]
     # yelp variants 1, 2, 3
     + [_yelp(s, v) for s in range(1, 6) for v in range(1, 4)]
 )
