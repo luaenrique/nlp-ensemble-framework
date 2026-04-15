@@ -294,7 +294,7 @@ class KSWINDetector:
     """Wraps river's KSWIN with the warning/drift interface used by this framework.
     KSWIN performs a Kolmogorov-Smirnov test between a sliding reference window
     and a recent statistics window — label-free, operates on the MMD/JSD signal."""
-    def __init__(self, alpha: float = 0.005, window_size: int = 100,
+    def __init__(self, alpha: float = 0.01, window_size: int = 100,
                  stat_size: int = 30, seed: int = 42):
         self._alpha       = alpha
         self._window_size = window_size
@@ -397,8 +397,8 @@ def build_model(enc: dict, num_labels: int) -> tuple:
         r=8, lora_alpha=16,
         target_modules=_detect_lora_targets(model),
         task_type=TaskType.SEQ_CLS,
-        
     )
+    torch.manual_seed(42)  # seed LoRA A (kaiming_uniform) init
     model = get_peft_model(model, lora_cfg).to(device)
     return model, tokenizer
 
