@@ -361,9 +361,7 @@ class PageHinkleyDetector:
 
 
 DETECTOR_FACTORIES = {
-    "ADWIN": lambda: ADWINDetector(),
     "KSWIN": lambda: KSWINDetector(),
-    "PH":    lambda: PageHinkleyDetector(),
 }
 
 DETECTOR_STYLES = {
