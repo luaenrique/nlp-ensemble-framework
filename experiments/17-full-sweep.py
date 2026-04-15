@@ -148,7 +148,7 @@ def _yelp_ss(subset: int) -> dict:
 
 DATASETS = (
     # airbnb variants 1, 2, 3
-    [_airbnb(s, v) for s in range(1, 6) for v in range(1, 4)]
+    #[_airbnb(s, v) for s in range(1, 6) for v in range(1, 4)]
     # yelp -ss
     + [_yelp_ss(s) for s in range(1, 6)]
     # yelp variants 1, 2, 3
@@ -409,6 +409,7 @@ def build_model(enc: dict, num_labels: int) -> tuple:
         r=8, lora_alpha=16,
         target_modules=_detect_lora_targets(model),
         task_type=TaskType.SEQ_CLS,
+        
     )
     model = get_peft_model(model, lora_cfg).to(device)
     return model, tokenizer
