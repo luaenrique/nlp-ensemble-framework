@@ -307,9 +307,8 @@ class KSWINDetector:
     def update(self, value: float) -> None:
         self._det.update(value)
         self._drift   = self._det.drift_detected
-        # KSWIN has no native warning level — use p_value < 2×alpha as proxy.
-        # p_value == 0 means the window hasn't filled yet; exclude that case.
-        self._warning = (not self._drift) and (self._det.p_value > 0) and (self._det.p_value < self._alpha * 2)
+        # KSWIN has no native two-level detection — warning is always False.
+        self._warning = False
 
     @property
     def warning_detected(self) -> bool: return self._warning
