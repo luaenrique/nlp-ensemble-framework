@@ -56,7 +56,7 @@ warnings.filterwarnings("ignore")
 #     {dataset}/
 #       plots/
 #       per_window/
-RESULTS_DIR = "experiment18_results_3"
+RESULTS_DIR = "experiment18_results_4"
 SUMMARY_CSV = os.path.join(RESULTS_DIR, "summary.csv")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
