@@ -291,24 +291,27 @@ class ADWINDetector:
 
 
 class KSWINDetector:
-    """Wraps river's KSWIN with the warning/drift interface used by this framework.
-    KSWIN performs a Kolmogorov-Smirnov test between a sliding reference window
-    and a recent statistics window — label-free, operates on the MMD/JSD signal."""
-    def __init__(self, alpha: float = 0.01, window_size: int = 100,
-                 stat_size: int = 30, seed: int = 42):
-        self._alpha       = alpha
+    """Two KSWIN instances on the signal stream — one for warning, one for drift.
+    Higher alpha → rejects H0 more easily → fires earlier (warning).
+    Lower alpha → more conservative → fires later (drift)."""
+    def __init__(self, alpha_warning: float = 0.05, alpha_drift: float = 0.005,
+                 window_size: int = 100, stat_size: int = 30, seed: int = 42):
+        self._alpha_w     = alpha_warning
+        self._alpha_d     = alpha_drift
         self._window_size = window_size
         self._stat_size   = stat_size
         self._seed        = seed
-        self._det         = KSWIN(alpha=alpha, window_size=window_size,
+        self._warn_det    = KSWIN(alpha=alpha_warning, window_size=window_size,
+                                  stat_size=stat_size, seed=seed)
+        self._drift_det   = KSWIN(alpha=alpha_drift,   window_size=window_size,
                                   stat_size=stat_size, seed=seed)
         self._warning = self._drift = False
 
     def update(self, value: float) -> None:
-        self._det.update(value)
-        self._drift   = self._det.drift_detected
-        # KSWIN has no native two-level detection — warning is always False.
-        self._warning = False
+        self._warn_det.update(value)
+        self._drift_det.update(value)
+        self._drift   = self._drift_det.drift_detected
+        self._warning = self._warn_det.drift_detected and not self._drift
 
     @property
     def warning_detected(self) -> bool: return self._warning
@@ -316,8 +319,10 @@ class KSWINDetector:
     def drift_detected(self)   -> bool: return self._drift
 
     def reset(self) -> None:
-        self._det     = KSWIN(alpha=self._alpha, window_size=self._window_size,
-                              stat_size=self._stat_size, seed=self._seed)
+        self._warn_det  = KSWIN(alpha=self._alpha_w, window_size=self._window_size,
+                                stat_size=self._stat_size, seed=self._seed)
+        self._drift_det = KSWIN(alpha=self._alpha_d, window_size=self._window_size,
+                                stat_size=self._stat_size, seed=self._seed)
         self._warning = self._drift = False
 
 
