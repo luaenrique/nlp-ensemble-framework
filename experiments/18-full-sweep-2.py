@@ -56,7 +56,7 @@ warnings.filterwarnings("ignore")
 #     {dataset}/
 #       plots/
 #       per_window/
-RESULTS_DIR = "experiment18_results_4"
+RESULTS_DIR = "experiment18_results_5"
 SUMMARY_CSV = os.path.join(RESULTS_DIR, "summary.csv")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -294,7 +294,7 @@ class KSWINDetector:
     """Two KSWIN instances on the signal stream — one for warning, one for drift.
     Higher alpha → rejects H0 more easily → fires earlier (warning).
     Lower alpha → more conservative → fires later (drift)."""
-    def __init__(self, alpha_warning: float = 0.05, alpha_drift: float = 0.001,
+    def __init__(self, alpha_warning: float = 0.05, alpha_drift: float = 0.01,
                  window_size: int = 100, stat_size: int = 30, seed: int = 42):
         self._alpha_w     = alpha_warning
         self._alpha_d     = alpha_drift
