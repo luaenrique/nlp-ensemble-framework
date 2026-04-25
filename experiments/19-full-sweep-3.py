@@ -56,7 +56,7 @@ warnings.filterwarnings("ignore")
 #     {dataset}/
 #       plots/
 #       per_window/
-RESULTS_DIR = "experiment18_results_5"
+RESULTS_DIR = "experiment19_adwin_100"
 SUMMARY_CSV = os.path.join(RESULTS_DIR, "summary.csv")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -375,7 +375,7 @@ class PageHinkleyDetector:
 
 
 DETECTOR_FACTORIES = {
-    "KSWIN": lambda: KSWINDetector(),
+    "ADWIN": lambda: ADWINDetector(),
 }
 
 DETECTOR_STYLES = {
