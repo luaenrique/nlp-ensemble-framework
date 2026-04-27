@@ -56,7 +56,7 @@ warnings.filterwarnings("ignore")
 #     {dataset}/
 #       plots/
 #       per_window/
-RESULTS_DIR = "experiment19_adwin_100"
+RESULTS_DIR = "experiment19_adwin_100_2"
 SUMMARY_CSV = os.path.join(RESULTS_DIR, "summary.csv")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -275,7 +275,7 @@ def compute_jsd(P: np.ndarray, Q: np.ndarray,
 
 class ADWINDetector:
     """Two ADWIN instances on the signal stream — one for warning, one for drift."""
-    def __init__(self, delta_warning: float = 0.3, delta_drift: float = 0.15):
+    def __init__(self, delta_warning: float = 0.1, delta_drift: float = 0.02):
         self._delta_w   = delta_warning
         self._delta_d   = delta_drift
         self._warn_det  = ADWIN(delta=delta_warning)
