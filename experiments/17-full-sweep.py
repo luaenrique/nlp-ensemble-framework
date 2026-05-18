@@ -49,13 +49,10 @@ from transformers import (
 
 warnings.filterwarnings("ignore")
 
+# ── Verbosity ──────────────────────────────────────────────────────────────────
+VERBOSE = False  # True só pra debug
+
 # ── Output dirs ────────────────────────────────────────────────────────────────
-# Structure:
-#   experiment17_results/
-#     summary.csv
-#     {dataset}/
-#       plots/
-#       per_window/
 RESULTS_DIR = "experiment17_results_2"
 SUMMARY_CSV = os.path.join(RESULTS_DIR, "summary.csv")
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -78,14 +75,12 @@ PLOT_BUCKET_SIZE   = 1_000
 ADAPT_KEEP_RATIO   = 0.5
 ADAPT_MIN_SAMPLES  = 8
 WARNING_BUFFER_MAX = 500
-ACC_SMOOTHING      = 500  # fixed smoothing window for prequential accuracy,
-                          # independent of detection window_size
+ACC_SMOOTHING      = 500
 
 # ── Sweep grid ─────────────────────────────────────────────────────────────────
 SWEEP_WINDOW_SIZES      = [50, 100, 200]
 SWEEP_SELECTION_METHODS = ["convex_hull", "convex_hull_per_class"]
 SWEEP_METRICS           = ["mmd", "jsd"]
-# Detectors are instantiated fresh per run — see DETECTOR_FACTORIES below
 
 # ── Datasets ───────────────────────────────────────────────────────────────────
 def _binarize_yelp_stars(star) -> int:
@@ -93,7 +88,7 @@ def _binarize_yelp_stars(star) -> int:
     return 0 if int(star) <= 2 else 1
 
 
-_YELP_DRIFT_POS   = list(range(50_000, 600_000, 50_000))   # visual markers every 50k
+_YELP_DRIFT_POS   = list(range(50_000, 600_000, 50_000))
 _AIRBNB_DRIFT_POS = [50_000, 100_000, 150_000]
 
 def _airbnb(subset: int, variant: int) -> dict:
@@ -411,7 +406,6 @@ def build_model(enc: dict, num_labels: int) -> tuple:
         r=8, lora_alpha=16,
         target_modules=_detect_lora_targets(model),
         task_type=TaskType.SEQ_CLS,
-        
     )
     model = get_peft_model(model, lora_cfg).to(device)
     return model, tokenizer
@@ -449,7 +443,8 @@ def train_model(model, tokenizer, texts, labels, label_map,
             model(**inputs, labels=bl).loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-    print(f"  [{label.upper()}] {len(texts):,} samples × {epochs} epochs done")
+    if VERBOSE:
+        print(f"  [{label.upper()}] {len(texts):,} samples × {epochs} epochs done")
 
 
 # ── Sample selection ───────────────────────────────────────────────────────────
@@ -578,8 +573,7 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
                  detector, det_name: str,
                  metric_name: str,
                  selection_fn) -> tuple:
-    """Drift detection + LoRA adaptation.
-    Returns (positions, accuracies, adapt_positions, per_window_rows)."""
+    """Drift detection + LoRA adaptation."""
     n_windows       = len(stream_texts) // window_size
     correct_history = []
     positions, accuracies, adapt_positions = [], [], []
@@ -617,24 +611,24 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
             if len(warn_buffer_X) < WARNING_BUFFER_MAX:
                 warn_buffer_X.extend(X_win.tolist())
                 warn_buffer_y.extend(y_win.tolist())
-            print(f"  [WARN/{det_name}/{metric_name}] w{i+1}  {metric_name.upper()}={signal:.4f}"
-                  f"  buf={len(warn_buffer_X)}")
+            if VERBOSE:
+                print(f"  [WARN/{det_name}/{metric_name}] w{i+1}  "
+                      f"{metric_name.upper()}={signal:.4f}  buf={len(warn_buffer_X)}")
 
         if drifted:
-            print(f"  [DRIFT/{det_name}/{metric_name}] w{i+1} pos={pos:,}"
-                  f"  {metric_name.upper()}={signal:.4f}  buf={len(warn_buffer_X)}")
+            if VERBOSE:
+                print(f"  [DRIFT/{det_name}/{metric_name}] w{i+1} pos={pos:,}"
+                      f"  {metric_name.upper()}={signal:.4f}  buf={len(warn_buffer_X)}")
 
             tsne_coords = _tsne_2d(win_np)
             X_sel, y_sel, _ = selection_fn(ref_np, win_np, X_win, y_win, tsne_coords)
 
-            # combine with warning buffer
             if warn_buffer_X:
                 X_new = np.concatenate([np.array(warn_buffer_X), X_sel])
                 y_new = np.concatenate([np.array(warn_buffer_y), y_sel])
             else:
                 X_new, y_new = X_sel, y_sel
 
-            # experience replay: 50% burn-in to prevent catastrophic forgetting
             n_replay   = len(X_new) // 2
             replay_idx = np.random.choice(len(burnin_texts), n_replay, replace=False)
             X_train    = np.concatenate([X_new, burnin_texts[replay_idx]])
@@ -730,7 +724,8 @@ def save_plot(positions_base, acc_base,
     fname = os.path.join(plots_dir, f"{run_tag}.png")
     plt.savefig(fname, dpi=130, bbox_inches="tight")
     plt.close(fig)
-    print(f"  [PLOT] → {fname}")
+    if VERBOSE:
+        print(f"  [PLOT] → {fname}")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -767,7 +762,7 @@ for ds in DATASETS:
     com_df = pd.read_csv(ds["path"]).dropna(subset=[text_col])
     if ds["sort_col"] and ds["sort_col"] in com_df.columns:
         com_df = com_df.sort_values(ds["sort_col"]).reset_index(drop=True)
-    n_total    = ds["n_total"]   # None means use all rows
+    n_total    = ds["n_total"]
     all_texts  = com_df[text_col].astype(str).values[:n_total]
     raw_labels = com_df[ds.get("label_col", "label")].values[:n_total]
     transform  = ds.get("label_transform", None)
@@ -792,7 +787,8 @@ for ds in DATASETS:
 
         t_enc_start = time.perf_counter()
         model, tokenizer = build_model(enc, num_labels)
-        model.print_trainable_parameters()
+        if VERBOSE:
+            model.print_trainable_parameters()
         train_model(model, tokenizer, burnin_texts, burnin_labels,
                     label_map, label="burnin")
         initial_state = copy.deepcopy(model.state_dict())
@@ -804,7 +800,8 @@ for ds in DATASETS:
             base_done = os.path.join(pw_dir, f"{base_tag}.csv")
 
             if not os.path.exists(base_done):
-                print(f"\n  [BASELINE] W={window_size} ...")
+                if VERBOSE:
+                    print(f"\n  [BASELINE] W={window_size} ...")
                 model.load_state_dict(copy.deepcopy(initial_state))
                 pos_base, acc_base = pass_baseline(
                     model, tokenizer, inv_label_map,
@@ -819,7 +816,6 @@ for ds in DATASETS:
                     for i, (p, a) in enumerate(zip(pos_base, acc_base))
                 ])
             else:
-                # reload from disk
                 base_df  = pd.read_csv(base_done)
                 pos_base = base_df["window_pos"].tolist()
                 acc_base = base_df["prequential_acc"].tolist()
@@ -840,7 +836,8 @@ for ds in DATASETS:
                         pw_path = os.path.join(pw_dir, f"{run_tag}.csv")
 
                         if os.path.exists(pw_path):
-                            print(f"  [SKIP] {run_tag}")
+                            if VERBOSE:
+                                print(f"  [SKIP] {run_tag}")
                             df_r = pd.read_csv(pw_path)
                             pos_r = df_r["window_pos"].tolist()
                             acc_r = df_r["prequential_acc"].tolist()
@@ -852,7 +849,7 @@ for ds in DATASETS:
                             continue
 
                         t_run = time.perf_counter()
-                        print(f"\n  [{completed+1}] {run_tag}")
+                        print(f"  [{completed+1}/{total_combos}] {run_tag}")
                         model.load_state_dict(copy.deepcopy(initial_state))
 
                         pos_r, acc_r, adapt_pos, pw_rows = pass_retrain(
@@ -895,11 +892,11 @@ for ds in DATASETS:
                             "n_adaptations":  len(adapt_pos),
                             "wall_time_s":    wall_time,
                         })
-                        print(f"  [DONE] {run_tag}  n_adapt={len(adapt_pos)}"
+                        print(f"  [DONE] n_adapt={len(adapt_pos)}"
                               f"  wall={wall_time}s")
                         completed += 1
 
-                    # ── plot: baseline + 3 detectors for this (sel, metric, W)
+                    # ── plot ─────────────────────────────────────────────
                     plot_tag  = (f"{enc_tag.lower()}"
                                  f"_{sel_method}_{metric_name}_w{window_size}")
                     plot_path = os.path.join(plots_dir, f"{plot_tag}.png")
