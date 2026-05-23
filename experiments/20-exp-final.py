@@ -467,7 +467,7 @@ def train_model(model, tokenizer, texts, labels, label_map,
 def _tsne_2d(embeddings: np.ndarray) -> np.ndarray:
     perplexity = min(30, max(5, len(embeddings) // 3 - 1))
     return TSNE(n_components=2, random_state=42,
-                perplexity=perplexity, n_iter=300).fit_transform(embeddings)
+                perplexity=perplexity, max_iter=300).fit_transform(embeddings)
 
 def select_convex_hull(ref_np, win_np, X_win, y_win, win_2d) -> tuple:
     """Convex hull over the full window (all classes together)."""
