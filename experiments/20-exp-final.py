@@ -561,6 +561,7 @@ def pass_baseline(model, tokenizer, inv_label_map,
     """No drift detection, no retraining. Returns (positions, accuracies, per_window_rows)."""
     n_windows       = len(stream_texts) // window_size
     correct_history = []
+    y_true_history, y_pred_history = [], []
     positions, accuracies, per_window_rows = [], [], []
     cuda_available = torch.cuda.is_available()
 
@@ -576,9 +577,12 @@ def pass_baseline(model, tokenizer, inv_label_map,
         _, win_preds = encode_and_predict(X_win, model, tokenizer)
         preds_orig = np.array([inv_label_map[p] for p in win_preds])
         correct_history.extend((preds_orig == y_win).astype(int).tolist())
+        y_true_history.extend(y_win.tolist())
+        y_pred_history.extend(preds_orig.tolist())
         acc = float(np.mean(correct_history[-ACC_SMOOTHING:]))
-        macro_f1 = float(f1_score(y_win, preds_orig, average="macro",
-                                  zero_division=0))
+        macro_f1 = float(f1_score(y_true_history[-ACC_SMOOTHING:],
+                                  y_pred_history[-ACC_SMOOTHING:],
+                                  average="macro", zero_division=0))
         pos = burnin_size + start + window_size // 2
 
         wall_t = time.perf_counter() - t_win
@@ -615,6 +619,7 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
     """Drift detection + LoRA adaptation."""
     n_windows       = len(stream_texts) // window_size
     correct_history = []
+    y_true_history, y_pred_history = [], []
     positions, accuracies, adapt_positions = [], [], []
     warn_buffer_X, warn_buffer_y = [], []
     per_window_rows = []
@@ -638,9 +643,12 @@ def pass_retrain(model, tokenizer, label_map, inv_label_map,
 
         preds_orig = np.array([inv_label_map[p] for p in win_preds])
         correct_history.extend((preds_orig == y_win).astype(int).tolist())
+        y_true_history.extend(y_win.tolist())
+        y_pred_history.extend(preds_orig.tolist())
         acc = float(np.mean(correct_history[-ACC_SMOOTHING:]))
-        macro_f1 = float(f1_score(y_win, preds_orig, average="macro",
-                                  zero_division=0))
+        macro_f1 = float(f1_score(y_true_history[-ACC_SMOOTHING:],
+                                  y_pred_history[-ACC_SMOOTHING:],
+                                  average="macro", zero_division=0))
         pos = burnin_size + start + window_size // 2
 
         mmd = compute_mmd(ref_np, win_np, gamma)
