@@ -90,7 +90,7 @@ ACC_SMOOTHING      = 500
 # ── Sweep grid ─────────────────────────────────────────────────────────────────
 SWEEP_WINDOW_SIZES      = [100, 200, 500]
 SWEEP_SELECTION_METHODS = ["convex_hull", "convex_hull_per_class"]
-SWEEP_METRICS           = ["mmd", "jsd"]
+SWEEP_METRICS           = ["mmd"]
 SWEEP_PCT_LABELED       = [1.0]        # extend with 0.8, 0.6, ... in future runs
 SWEEP_SEEDS             = [0, 1, 2, 3, 4]
 
